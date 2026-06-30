@@ -1,0 +1,14 @@
+# Teklif Programı — Python bağımlılıkları
+# Kurulum: pip install -r requirements.txt
+
+# Masaüstü UI çerçevesi
+PyQt6>=6.5.0
+
+# PDF oluşturma
+reportlab>=4.0.0
+
+# PDF okuma/birleştirme (mevcut PDF'leri işlemek için)
+pypdf>=4.0.0
+
+# Font işleme (Inter fontunu variable'dan static'e dönüştürmek için)
+fonttools>=4.40.0
