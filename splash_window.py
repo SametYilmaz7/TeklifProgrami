@@ -229,6 +229,50 @@ class _SweepButton(QPushButton):
         pass
 
 
+# ── Amber taban + sweep buton (dolgu zaten amber olan butonlar için) ──────
+
+
+class AmberSweepButton(_SweepButton):
+    """
+    _SweepButton tabanını kullanır ama PrimaryActionButton'ın aksine
+    taban rengi her zaman amber'dir (koyu surface değil).
+    Hover'da ortadan dışa parlak bir ışık sweep'i genişler, tıklamada
+    %4 scale-down basınç efekti olur — splash ekranındakiyle birebir
+    aynı _SweepButton mantığı, sadece taban rengi değişti.
+    """
+
+    def __init__(self, text: str, height: int = 50, parent=None):
+        super().__init__(text, height=height, parent=parent)
+
+    def _draw(self, p, w, h):
+        radius = 10.0
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, w, h, radius, radius)
+
+        # Taban — her zaman amber
+        p.fillPath(path, QColor(C_ACCENT))
+
+        # Sweep: hover'da ortadan dışa genişleyen parlak oval (splash ile aynı mantık)
+        if self._sweep > 0:
+            cx, cy = w / 2, h / 2
+            grad = QRadialGradient(cx, cy, w * 0.6 * self._sweep + w * 0.1)
+            grad.setColorAt(0.0, QColor(255, 255, 255, int(55 * self._sweep)))
+            grad.setColorAt(0.45, QColor(255, 220, 140, int(30 * self._sweep)))
+            grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+            p.save()
+            p.setClipPath(path)
+            p.setBrush(grad)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRect(0, 0, w, h)
+            p.restore()
+
+        # Metin — her zaman koyu (amber zemin üzerinde kontrast için)
+        font = QFont("Inter", 13, QFont.Weight.Bold)
+        p.setFont(font)
+        p.setPen(QColor("#111111"))
+        p.drawText(QRect(0, 0, w, h), Qt.AlignmentFlag.AlignCenter, self._text)
+
+
 # ── Primary buton (amber sweep) ────────────────────────────────────────────
 
 

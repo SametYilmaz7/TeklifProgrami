@@ -6,8 +6,15 @@ Business logic dokunulmadı.
 from __future__ import annotations
 import sys
 
-from PyQt6.QtGui import QColor
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import (
+    Qt,
+    QRect,
+    pyqtSignal,
+    QPropertyAnimation,
+    QEasingCurve,
+    pyqtProperty,
+)
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -30,7 +37,7 @@ from PyQt6.QtWidgets import (
 
 from product_dialog import ProductDialog
 from offer_window import OfferWindow
-from splash_window import LargeDocIcon
+from splash_window import LargeDocIcon, AmberSweepButton
 from theme import (
     get_window_size,
     apply_theme,
@@ -46,8 +53,6 @@ from theme import (
     CLR_ACCENT_HOVER,
     CLR_ACCENT_PRESSED,
     CLR_ACCENT_SOFT,
-    CLR_DANGER,
-    CLR_DANGER_BG,
 )
 from database import (
     create_database,
@@ -59,6 +64,18 @@ from database import (
 )
 
 create_database()
+
+
+def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    """'#RRGGBB' formatındaki rengi (r, g, b) tuple'a çevirir."""
+    h = hex_color.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+# SearchBox animasyonunda renk interpolasyonu için RGB tuple'lar
+CLR_TEXT_DIM_RGB = _hex_to_rgb(CLR_TEXT_DIM)
+CLR_ACCENT_RGB = _hex_to_rgb(CLR_ACCENT)
+CLR_BORDER_RGB = _hex_to_rgb(CLR_BORDER)
 
 
 # ── Ortak widget sınıfları ─────────────────────────────────────────────────
@@ -77,31 +94,92 @@ class SecondaryButton(QPushButton):
         super().__init__(text, parent)
         self.setProperty("class", "secondary")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-
-class AccentButton(QPushButton):
-    """Amber primary buton — stil garantili (global QSS'e bağımlı değil)."""
-
-    def __init__(self, text: str, parent=None):
-        super().__init__(text, parent)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet(f"""
             QPushButton {{
-                background: {CLR_ACCENT};
-                color: #111111;
-                border: none;
-                border-radius: 10px;
-                padding: 9px 20px;
-                font-size: 14px;
-                font-weight: 700;
+                background: {CLR_SURFACE};
+                color: {CLR_TEXT};
+                border: 1.5px solid {CLR_BORDER};
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: 500;
+                padding: 4px 10px;
             }}
             QPushButton:hover {{
-                background: {CLR_ACCENT_HOVER};
+                background: {CLR_HOVER};
+                border-color: {CLR_BORDER_DARK};
             }}
             QPushButton:pressed {{
-                background: {CLR_ACCENT_PRESSED};
+                background: {CLR_BORDER_DARK};
             }}
             """)
+
+
+class AccentButton(AmberSweepButton):
+    """
+    Amber primary buton — splash ekranındaki AmberSweepButton'ı kullanır.
+    Hover/press animasyonları ana ekranla birebir aynıdır.
+    """
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(text, height=50, parent=parent)
+
+
+# ── Özel onay diyaloğu (QMessageBox yerine — buton görünürlüğü garantili) ──
+
+
+class ConfirmDialog(QDialog):
+    """
+    QMessageBox.question() yerine kullanılan, tam stil kontrolü bizde olan
+    onay diyaloğu. Windows native tema çakışmasından etkilenmez.
+    """
+
+    def __init__(self, title: str, message: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setFixedWidth(420)
+        self.setModal(True)
+        self.setStyleSheet(f"background: {CLR_SURFACE};")
+        self._result = False
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Gövde
+        body = QWidget()
+        body.setStyleSheet(f"background: {CLR_BG};")
+        b_lay = QVBoxLayout(body)
+        b_lay.setContentsMargins(24, 22, 24, 20)
+        b_lay.setSpacing(20)
+
+        msg_lbl = QLabel(message)
+        msg_lbl.setWordWrap(True)
+        msg_lbl.setStyleSheet(f"color: {CLR_TEXT}; font-size: 13px;")
+        b_lay.addWidget(msg_lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        btn_row.addStretch()
+
+        btn_cancel = SecondaryButton("İptal")
+        btn_cancel.setFixedSize(96, 38)
+
+        btn_confirm = AccentButton("Evet, Sil")
+        btn_confirm.setFixedSize(110, 38)
+
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_confirm)
+        b_lay.addLayout(btn_row)
+        root.addWidget(body)
+
+        btn_cancel.clicked.connect(self.reject)
+        btn_confirm.clicked.connect(self.accept)
+
+    @staticmethod
+    def ask(parent, title: str, message: str) -> bool:
+        """QMessageBox.question(...) == Yes yerine kullanılır."""
+        dialog = ConfirmDialog(title, message, parent)
+        return dialog.exec() == QDialog.DialogCode.Accepted
 
 
 # ── Excel import diyalogu ──────────────────────────────────────────────────
@@ -111,39 +189,20 @@ class ExcelImportDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Excel'den Ürün Aktar")
-        self.setMinimumWidth(540)
+        self.setMinimumWidth(620)
         self.setModal(True)
         self.excel_path = ""
         self.images_dir = ""
+        self.setStyleSheet(f"background: {CLR_BG};")
 
         root = QVBoxLayout(self)
         root.setSpacing(0)
         root.setContentsMargins(0, 0, 0, 0)
 
-        header = QWidget()
-        header.setFixedHeight(58)
-        header.setStyleSheet(
-            f"background: {CLR_SURFACE}; border-bottom: 1px solid {CLR_BORDER};"
-        )
-        h_lay = QHBoxLayout(header)
-        h_lay.setContentsMargins(24, 0, 24, 0)
-        title_lbl = QLabel("Excel'den Ürün Aktar")
-        title_lbl.setStyleSheet(
-            f"color: {CLR_TEXT}; font-size: 15px; font-weight: 700;"
-        )
-        accent_dot = QLabel("●")
-        accent_dot.setStyleSheet(
-            f"color: {CLR_ACCENT}; font-size: 18px; margin-right: 6px;"
-        )
-        h_lay.addWidget(accent_dot)
-        h_lay.addWidget(title_lbl)
-        h_lay.addStretch()
-        root.addWidget(header)
-
         body = QWidget()
         body.setStyleSheet(f"background: {CLR_BG};")
         bl = QVBoxLayout(body)
-        bl.setContentsMargins(24, 20, 24, 20)
+        bl.setContentsMargins(24, 22, 24, 20)
         bl.setSpacing(14)
 
         def field_lbl(txt):
@@ -161,7 +220,7 @@ class ExcelImportDialog(QDialog):
         self.excel_edit.setReadOnly(True)
         self.excel_edit.setFixedHeight(38)
         btn_excel = SecondaryButton("Gözat")
-        btn_excel.setFixedSize(72, 38)
+        btn_excel.setFixedSize(90, 38)
         er.addWidget(self.excel_edit)
         er.addWidget(btn_excel)
         bl.addLayout(er)
@@ -183,7 +242,7 @@ class ExcelImportDialog(QDialog):
         self.img_edit.setReadOnly(True)
         self.img_edit.setFixedHeight(38)
         btn_img = SecondaryButton("Gözat")
-        btn_img.setFixedSize(72, 38)
+        btn_img.setFixedSize(90, 38)
         btn_clr = SecondaryButton("✕")
         btn_clr.setFixedSize(38, 38)
         ir.addWidget(self.img_edit)
@@ -197,9 +256,9 @@ class ExcelImportDialog(QDialog):
         btn_row.setSpacing(10)
         btn_row.addStretch()
         btn_cancel = SecondaryButton("İptal")
-        btn_cancel.setFixedHeight(38)
+        btn_cancel.setFixedSize(96, 40)
         btn_ok = AccentButton("Aktarmayı Başlat")
-        btn_ok.setFixedHeight(38)
+        btn_ok.setFixedSize(170, 40)
         btn_row.addWidget(btn_cancel)
         btn_row.addWidget(btn_ok)
         bl.addLayout(btn_row)
@@ -278,34 +337,159 @@ class TopBar(QWidget):
 # ── Arama kutusu ────────────────────────────────────────────────────────────
 
 
+class _SearchIcon(QWidget):
+    """El çizimi büyüteç ikonu — karakter fontuna bağımlı değil, her zaman net."""
+
+    def __init__(self, size: int = 18, parent=None):
+        super().__init__(parent)
+        self._size = size
+        self._color = QColor(CLR_TEXT_DIM)
+        self.setFixedSize(size, size)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    def set_color(self, color: QColor) -> None:
+        self._color = color
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        s = self._size
+        pen_w = max(1.4, s / 11)
+        pen = QPen(self._color, pen_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+        # Lens (daire) — sol-üstte, sapa yer bırakacak şekilde
+        lens_d = s * 0.62
+        lens_x = s * 0.06
+        lens_y = s * 0.06
+        p.drawEllipse(int(lens_x), int(lens_y), int(lens_d), int(lens_d))
+
+        # Sap — daireden sağ-alta uzanan kısa çizgi
+        handle_x1 = lens_x + lens_d * 0.82
+        handle_y1 = lens_y + lens_d * 0.82
+        handle_x2 = s * 0.96
+        handle_y2 = s * 0.96
+        p.drawLine(int(handle_x1), int(handle_y1), int(handle_x2), int(handle_y2))
+        p.end()
+
+
 class SearchBox(QWidget):
+    """
+    Modern arama kutusu — el çizimi büyüteç ikonu, focus animasyonu.
+    Focus alındığında: kenarlık amber'e geçer + dış glow belirir + ikon
+    rengi amber'e döner. Tüm geçişler QPropertyAnimation ile yumuşaktır.
+    """
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(44)
+        self.setFixedHeight(46)
         self.setFixedWidth(380)
-        self.setStyleSheet(
-            f"background: {CLR_SURFACE}; border: 1.5px solid {CLR_BORDER}; border-radius: 10px;"
-        )
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 0, 14, 0)
-        lay.setSpacing(8)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        icon = QLabel("⌕")
-        icon.setStyleSheet(f"color: {CLR_TEXT_DIM}; font-size: 16px; border: none;")
+        self._focus_t = 0.0  # 0=normal, 1=focus (border/glow rengi için)
+
+        self._anim_in = QPropertyAnimation(self, b"focusT", self)
+        self._anim_in.setDuration(220)
+        self._anim_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._anim_out = QPropertyAnimation(self, b"focusT", self)
+        self._anim_out.setDuration(200)
+        self._anim_out.setEasingCurve(QEasingCurve.Type.InCubic)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 0, 12, 0)
+        lay.setSpacing(10)
+
+        self._icon = _SearchIcon(17)
         self.input = QLineEdit()
         self.input.setPlaceholderText("Ürün adı veya kodu ile ara…")
         self.input.setStyleSheet(
-            f"QLineEdit {{ background: transparent; border: none; font-size: 13px; color: {CLR_TEXT}; }}"
+            f"QLineEdit {{ background: transparent; border: none; font-size: 13px; "
+            f"color: {CLR_TEXT}; padding: 0; }}"
         )
-        lay.addWidget(icon)
+        self.input.installEventFilter(self)
+
+        lay.addWidget(self._icon)
         lay.addWidget(self.input)
+
+    # ── pyqtProperty: focusT (0→1 arası geçiş değeri) ──────────────────────
+
+    def _get_focus_t(self) -> float:
+        return self._focus_t
+
+    def _set_focus_t(self, value: float) -> None:
+        self._focus_t = value
+        # İkon rengini de aynı geçişe göre interpolate et
+        r = int(CLR_TEXT_DIM_RGB[0] + (CLR_ACCENT_RGB[0] - CLR_TEXT_DIM_RGB[0]) * value)
+        g = int(CLR_TEXT_DIM_RGB[1] + (CLR_ACCENT_RGB[1] - CLR_TEXT_DIM_RGB[1]) * value)
+        b = int(CLR_TEXT_DIM_RGB[2] + (CLR_ACCENT_RGB[2] - CLR_TEXT_DIM_RGB[2]) * value)
+        self._icon.set_color(QColor(r, g, b))
+        self.update()
+
+    focusT = pyqtProperty(float, _get_focus_t, _set_focus_t)
+
+    # ── Focus olaylarını yakala (QLineEdit child'ı üzerinden) ─────────────
+
+    def eventFilter(self, obj, event):
+        if obj is self.input:
+            if event.type() == event.Type.FocusIn:
+                self._anim_out.stop()
+                self._anim_in.setStartValue(self._focus_t)
+                self._anim_in.setEndValue(1.0)
+                self._anim_in.start()
+            elif event.type() == event.Type.FocusOut:
+                self._anim_in.stop()
+                self._anim_out.setStartValue(self._focus_t)
+                self._anim_out.setEndValue(0.0)
+                self._anim_out.start()
+        return super().eventFilter(obj, event)
+
+    # ── Çizim: zemin + animasyonlu kenarlık + glow ─────────────────────────
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        t = self._focus_t
+
+        path = QPainterPath()
+        path.addRoundedRect(1.5, 1.5, w - 3, h - 3, 11, 11)
+
+        # Dış glow — focus arttıkça belirginleşen amber halo
+        if t > 0:
+            glow_pen = QPen(QColor(248, 180, 88, int(70 * t)), 5.0)
+            p.setPen(glow_pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+
+        # Zemin
+        p.fillPath(path, QColor(CLR_SURFACE))
+
+        # Kenarlık — koyu griden amber'e geçiş
+        br = int(CLR_BORDER_RGB[0] + (CLR_ACCENT_RGB[0] - CLR_BORDER_RGB[0]) * t)
+        bg = int(CLR_BORDER_RGB[1] + (CLR_ACCENT_RGB[1] - CLR_BORDER_RGB[1]) * t)
+        bb = int(CLR_BORDER_RGB[2] + (CLR_ACCENT_RGB[2] - CLR_BORDER_RGB[2]) * t)
+        border_pen = QPen(QColor(br, bg, bb), 1.5 + 0.5 * t)
+        p.setPen(border_pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+        p.end()
 
 
 # ── Ürün tablosu ─────────────────────────────────────────────────────────────
 
 
 class ProductTable(QTableWidget):
-    """Görseldeki gibi: Ürün Kodu (amber başlık) | Ürün Adı, satır başında küçük kutu ikonu."""
+    """
+    Görseldeki gibi: Ürün Kodu (amber başlık) | Ürün Adı, satır başında küçük kutu ikonu.
+
+    Hover efekti, item arka planlarını tek tek boyamak yerine, satırın tam
+    genişliğinde yarı saydam bir "highlight bandı" (QWidget overlay) ile
+    yapılır. Bu yöntem QSS/item-background çakışmalarından tamamen bağımsız
+    çalışır çünkü item verisine hiç dokunmaz, sadece üstüne bir bant çizer.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -319,6 +503,7 @@ class ProductTable(QTableWidget):
         self.setShowGrid(False)
         self.setAlternatingRowColors(False)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setMouseTracking(True)
 
         self.setStyleSheet(f"""
             QTableWidget {{
@@ -334,9 +519,6 @@ class ProductTable(QTableWidget):
                 border-bottom: 1px solid {CLR_BORDER};
                 color: {CLR_TEXT};
             }}
-            QTableWidget::item:hover {{
-                background: {CLR_HOVER};
-            }}
             QTableWidget::item:selected {{
                 background: {CLR_ACCENT_SOFT};
                 color: {CLR_TEXT};
@@ -344,16 +526,14 @@ class ProductTable(QTableWidget):
             }}
             QHeaderView::section {{
                 background: {CLR_SURFACE};
-                color: {CLR_TEXT_DIM};
-                font-size: 12px;
+                color: {CLR_TEXT};
+                font-size: 13px;
                 font-weight: 700;
                 padding: 0 16px;
                 height: 46px;
                 border: none;
                 border-bottom: 1.5px solid {CLR_BORDER};
-            }}
-            QHeaderView::section:nth-child(2) {{
-                color: {CLR_ACCENT};
+                text-align: left;
             }}
             """)
 
@@ -361,13 +541,56 @@ class ProductTable(QTableWidget):
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        hdr.setDefaultAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         self.setColumnWidth(0, 56)
         self.setColumnWidth(1, 180)
         self.verticalHeader().setDefaultSectionSize(56)
 
-        # "Ürün Kodu" başlığını amber yapmak için ayrı bir özel item kullan
-        kod_header_item = QTableWidgetItem("Ürün Kodu")
-        self.setHorizontalHeaderItem(1, kod_header_item)
+        self._hovered_row = -1
+        self.viewport().setMouseTracking(True)
+        self.viewport().installEventFilter(self)
+
+    # ── Satır bazlı hover (paintEvent'te item'lardan ÖNCE çizilir) ────────
+
+    def eventFilter(self, obj, event):
+        if obj is self.viewport():
+            if event.type() == event.Type.MouseMove:
+                row = self.rowAt(int(event.position().y()))
+                if row != self._hovered_row:
+                    self._hovered_row = row
+                    self.viewport().update()
+            elif event.type() == event.Type.Leave:
+                if self._hovered_row != -1:
+                    self._hovered_row = -1
+                    self.viewport().update()
+        return super().eventFilter(obj, event)
+
+    def paintEvent(self, event):
+        # Önce hover bandını çiz (arka plan katmanı)
+        if self._hovered_row >= 0:
+            selected = (
+                self.selectionModel() is not None
+                and self.selectionModel().isRowSelected(
+                    self._hovered_row, self.rootIndex()
+                )
+            )
+            if not selected:
+                row_rect = self.visualRect(self.model().index(self._hovered_row, 0))
+                last_rect = self.visualRect(
+                    self.model().index(self._hovered_row, self.columnCount() - 1)
+                )
+                band_x = row_rect.x()
+                band_w = (last_rect.x() + last_rect.width()) - band_x
+                band_rect = QRect(band_x, row_rect.y(), band_w, row_rect.height())
+
+                painter = QPainter(self.viewport())
+                painter.fillRect(band_rect, QColor(CLR_HOVER))
+                painter.end()
+
+        # Sonra Qt'nin kendi item/widget render'ı üstüne gelsin
+        super().paintEvent(event)
 
 
 # ── Ana pencere — Ürünler ekranı ────────────────────────────────────────────
@@ -380,6 +603,7 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Ürünler")
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         _w, _h = get_window_size()
         self.setFixedSize(_w, _h)
         self.setStyleSheet(f"background: {CLR_BG};")
@@ -479,6 +703,7 @@ class MainWindow(QWidget):
             self.table.insertRow(row)
 
             icon_wrap = QWidget()
+            icon_wrap.setStyleSheet("background: transparent;")
             icon_wrap_lay = QHBoxLayout(icon_wrap)
             icon_wrap_lay.setContentsMargins(0, 0, 0, 0)
             icon_wrap_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -488,10 +713,12 @@ class MainWindow(QWidget):
             code_item = QTableWidgetItem(product.product_code)
             code_item.setFlags(code_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             code_item.setData(Qt.ItemDataRole.UserRole, product.id)
+            code_item.setBackground(QColor(CLR_BG))
             self.table.setItem(row, 1, code_item)
 
             name_item = QTableWidgetItem(product.name)
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            name_item.setBackground(QColor(CLR_BG))
             self.table.setItem(row, 2, name_item)
 
     def _on_search_changed(self, text: str):
@@ -512,13 +739,10 @@ class MainWindow(QWidget):
             self._selected_product_id = code_item.data(Qt.ItemDataRole.UserRole)
 
     def _confirm_delete(self, product_id: int):
-        confirm = QMessageBox.question(
-            self,
-            "Ürün Sil",
-            "Bu ürünü silmek istediğinizden emin misiniz?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        confirmed = ConfirmDialog.ask(
+            self, "Ürün Sil", "Bu ürünü silmek istediğinizden emin misiniz?"
         )
-        if confirm != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
         try:
             delete_product(product_id)
@@ -596,6 +820,19 @@ class MainWindow(QWidget):
     def open_offer_window(self):
         self.offer_window = OfferWindow()
         self.offer_window.show()
+
+    def mousePressEvent(self, event):
+        """
+        Boş bir alana (arka plan, layout boşluğu) tıklanınca odağı pencereye
+        taşır. Bu sayede arama kutusu gibi widget'lar FocusOut alır ve
+        focus animasyonları (glow vb.) doğru şekilde söner.
+
+        Not: Bu metod yalnızca tıklama hiçbir alt widget tarafından
+        yakalanmadığında (yani gerçekten boş bir alana tıklandığında)
+        çağrılır — Qt'nin event propagation modeli gereği.
+        """
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        super().mousePressEvent(event)
 
 
 if __name__ == "__main__":

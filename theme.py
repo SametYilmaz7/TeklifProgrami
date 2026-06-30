@@ -271,7 +271,7 @@ QPushButton[class="ghost"]:pressed {{
     background: {CLR_HOVER2};
 }}
 
-/* Danger — silme */
+/* Danger — silme (amber tonlarda, kırmızı kullanılmıyor) */
 QPushButton[class="danger"] {{
     background: transparent;
     color: {CLR_TEXT_DIM};
@@ -282,11 +282,11 @@ QPushButton[class="danger"] {{
     border-radius: 6px;
 }}
 QPushButton[class="danger"]:hover {{
-    color: {CLR_DANGER};
-    background: {CLR_DANGER_BG};
+    color: {CLR_ACCENT};
+    background: {CLR_ACCENT_SOFT};
 }}
 QPushButton[class="danger"]:pressed {{
-    background: #3A1A1A;
+    background: {CLR_HOVER2};
 }}
 
 /* ════════════════════════════════════════════
@@ -464,10 +464,24 @@ QMessageBox {{
 QMessageBox QLabel {{
     color: {CLR_TEXT};
     font-size: 13px;
+    background: transparent;
 }}
 QMessageBox QPushButton {{
+    background: {CLR_ACCENT};
+    color: #111111;
+    border: none;
+    border-radius: 8px;
     min-width: 88px;
+    min-height: 30px;
     padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 700;
+}}
+QMessageBox QPushButton:hover {{
+    background: {CLR_ACCENT_HOVER};
+}}
+QMessageBox QPushButton:pressed {{
+    background: {CLR_ACCENT_PRESSED};
 }}
 
 /* ════════════════════════════════════════════
