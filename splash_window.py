@@ -273,6 +273,50 @@ class AmberSweepButton(_SweepButton):
         p.drawText(QRect(0, 0, w, h), Qt.AlignmentFlag.AlignCenter, self._text)
 
 
+# ── İkon butonu (amber kenarlık + sweep glow) ────────────────────────────
+
+
+class IconSweepButton(_SweepButton):
+    """
+    Şeffaf zemin, amber kenarlık. Hover'da kenarlık amber'e parlar ve
+    içeride hafif bir amber glow sweep'i yayılır. Ürün Kodu/Teklif gibi
+    ekranlardaki küçük ikon butonları için (içine child widget konabilir).
+    """
+
+    def __init__(self, height: int = 40, parent=None):
+        super().__init__("", height=height, parent=parent)
+
+    def _draw(self, p, w, h):
+        from PyQt6.QtGui import QRadialGradient
+
+        radius = 8.0
+        path = QPainterPath()
+        path.addRoundedRect(1, 1, w - 2, h - 2, radius, radius)
+
+        # Taban — her zaman şeffaf/koyu
+        p.fillPath(path, QColor(C_BG if self._sweep == 0 else C_SURFACE))
+
+        # Hover sweep: amber soft glow
+        if self._sweep > 0:
+            cx, cy = w / 2, h / 2
+            grad = QRadialGradient(cx, cy, w * 0.7)
+            grad.setColorAt(0.0, QColor(248, 180, 88, int(40 * self._sweep)))
+            grad.setColorAt(1.0, QColor(248, 180, 88, 0))
+            p.save()
+            p.setClipPath(path)
+            p.setBrush(grad)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRect(0, 0, w, h)
+            p.restore()
+
+        # Kenarlık — sweep arttıkça amber'leşir
+        alpha = int(180 + 75 * self._sweep)
+        border_color = QColor(248, 180, 88, alpha)
+        p.setPen(QPen(border_color, 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+
+
 # ── Primary buton (amber sweep) ────────────────────────────────────────────
 
 

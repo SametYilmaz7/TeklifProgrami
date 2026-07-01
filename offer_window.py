@@ -1,12 +1,23 @@
 ﻿"""
 offer_window.py  —  Teklif penceresi UI (dark theme, amber accent)
 Business logic (_service, _generate_pdf vb.) dokunulmadı.
+Widget isimleri korundu.
 """
 
 from __future__ import annotations
 import os, subprocess, sys
 
-from PyQt6.QtCore import Qt, QDate, QPoint, pyqtSignal
+from PyQt6.QtCore import (
+    Qt,
+    QDate,
+    QPoint,
+    QRect,
+    pyqtSignal,
+    QPropertyAnimation,
+    QEasingCurve,
+    pyqtProperty,
+)
+from PyQt6.QtGui import QColor, QPainter, QPen, QPainterPath
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -28,6 +39,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QHeaderView,
+    QAbstractItemView,
 )
 
 from database import get_product_by_code, search_products
@@ -47,20 +59,17 @@ from theme import (
     CLR_ACCENT_HOVER,
     CLR_ACCENT_PRESSED,
     CLR_ACCENT_SOFT,
-    CLR_DANGER,
-    CLR_DANGER_BG,
 )
 
-# Pencere boyutu çalışma zamanında hesaplanır
 VAT_RATE = 0.20
 SEARCH_POPUP_MAX_ROWS = 8
 SEARCH_POPUP_ROW_H = 42
 
 
-# ── Yardımcı widget'lar ────────────────────────────────────────────────────
+# ── Ortak yardımcılar ─────────────────────────────────────────────────────
 
 
-class Divider(QFrame):
+class _Divider(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.HLine)
@@ -68,131 +77,587 @@ class Divider(QFrame):
         self.setStyleSheet(f"background: {CLR_BORDER}; border: none;")
 
 
-class FieldLabel(QLabel):
+class _FieldLabel(QLabel):
     def __init__(self, text: str, parent=None):
-        super().__init__(text.upper(), parent)
+        super().__init__(text, parent)
         self.setStyleSheet(
-            f"color: {CLR_TEXT_DIM}; font-size: 10px; font-weight: 700; "
-            f"letter-spacing: 0.7px;"
+            "color: #F5F5F5; font-size: 13px; font-weight: 700; "
+            "background: transparent; border: none; padding: 0; margin: 0;"
         )
 
 
-class AccentButton(QPushButton):
-    def __init__(self, text: str, parent=None):
-        super().__init__(text, parent)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(38)
+def _input_style(multiline=False) -> str:
+    base = (
+        f"background: {CLR_SURFACE}; color: {CLR_TEXT}; "
+        f"border: 1.5px solid {CLR_BORDER}; border-radius: 8px; "
+        f"font-size: 13px; padding: 6px 12px; "
+    )
+    widget = "QTextEdit" if multiline else "QLineEdit"
+    combo = "QComboBox" if not multiline else ""
+    date = "QDateEdit" if not multiline else ""
+    parts = [
+        f"{widget} {{ {base} }}",
+        f"{widget}:focus {{ border-color: {CLR_ACCENT}; }}",
+        f"{widget}:hover {{ border-color: {CLR_BORDER_DARK}; }}",
+    ]
+    return "\n".join(parts)
 
 
-class SecondaryButton(QPushButton):
-    def __init__(self, text: str, parent=None):
-        super().__init__(text, parent)
-        self.setProperty("class", "secondary")
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
+# ── Renk interpolasyonu ──────────────────────────────────────────────────
 
 
-# ── Toplamlar kartı ────────────────────────────────────────────────────────
+def _hex_rgb(h):
+    h = h.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
-class TotalsWidget(QWidget):
+_BORDER_RGB = _hex_rgb(CLR_BORDER)
+_ACCENT_RGB = _hex_rgb(CLR_ACCENT)
+_MUTED_RGB = _hex_rgb(CLR_TEXT_MUTED)
+
+
+# ── Animasyonlu input sınıfları ────────────────────────────────────────────
+# Arama kutusundakiyle aynı: focus'ta amber kenarlık + dış glow.
+
+
+class _AnimatedInput(QLineEdit):
+    """QLineEdit — focus/hover'da amber animasyonlu kenarlık + glow."""
+
+    def __init__(self, placeholder="", parent=None):
+        super().__init__(parent)
+        if placeholder:
+            self.setPlaceholderText(placeholder)
+        self.setFixedHeight(40)
+        self._t = 0.0
+        self._h = 0.0  # hover
+        self._anim_in = QPropertyAnimation(self, b"focusT", self)
+        self._anim_in.setDuration(220)
+        self._anim_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim_out = QPropertyAnimation(self, b"focusT", self)
+        self._anim_out.setDuration(180)
+        self._anim_out.setEasingCurve(QEasingCurve.Type.InCubic)
+        self._anim_hov_in = QPropertyAnimation(self, b"hoverT", self)
+        self._anim_hov_in.setDuration(150)
+        self._anim_hov_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim_hov_out = QPropertyAnimation(self, b"hoverT", self)
+        self._anim_hov_out.setDuration(150)
+        self._anim_hov_out.setEasingCurve(QEasingCurve.Type.InCubic)
+        self.setStyleSheet(
+            "QLineEdit { background: transparent; border: none; "
+            f"font-size: 13px; color: {CLR_TEXT}; padding: 0 2px; }}"
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    def _get_t(self):
+        return self._t
+
+    def _set_t(self, v):
+        self._t = v
+        self.update()
+
+    focusT = pyqtProperty(float, _get_t, _set_t)
+
+    def _get_h(self):
+        return self._h
+
+    def _set_h(self, v):
+        self._h = v
+        self.update()
+
+    hoverT = pyqtProperty(float, _get_h, _set_h)
+
+    def focusInEvent(self, e):
+        self._anim_out.stop()
+        self._anim_in.setStartValue(self._t)
+        self._anim_in.setEndValue(1.0)
+        self._anim_in.start()
+        super().focusInEvent(e)
+
+    def focusOutEvent(self, e):
+        self._anim_in.stop()
+        self._anim_out.setStartValue(self._t)
+        self._anim_out.setEndValue(0.0)
+        self._anim_out.start()
+        super().focusOutEvent(e)
+
+    def enterEvent(self, e):
+        self._anim_hov_out.stop()
+        self._anim_hov_in.setStartValue(self._h)
+        self._anim_hov_in.setEndValue(1.0)
+        self._anim_hov_in.start()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._anim_hov_in.stop()
+        self._anim_hov_out.setStartValue(self._h)
+        self._anim_hov_out.setEndValue(0.0)
+        self._anim_hov_out.start()
+        super().leaveEvent(e)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        t = max(self._t, self._h * 0.35)  # hover hafif, focus tam parlar
+
+        path = QPainterPath()
+        path.addRoundedRect(1.5, 1.5, w - 3, h - 3, 8, 8)
+
+        # Glow
+        if t > 0.01:
+            gp = QPen(QColor(248, 180, 88, int(60 * t)), 5.0)
+            p.setPen(gp)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+
+        # Zemin
+        p.fillPath(path, QColor(CLR_BG if self._t < 0.01 else CLR_SURFACE))
+
+        # Kenarlık
+        br = int(_BORDER_RGB[0] + (_ACCENT_RGB[0] - _BORDER_RGB[0]) * t)
+        bg = int(_BORDER_RGB[1] + (_ACCENT_RGB[1] - _BORDER_RGB[1]) * t)
+        bb = int(_BORDER_RGB[2] + (_ACCENT_RGB[2] - _BORDER_RGB[2]) * t)
+        p.setPen(QPen(QColor(br, bg, bb), 1.5 + 0.5 * t))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+        p.end()
+        super().paintEvent(event)
+
+
+class _AnimatedTextEdit(QWidget):
+    """
+    QTextEdit sarmalayıcısı — animasyonlu kenarlık efekti için dış QWidget
+    paintEvent'te kenarlığı çizer, içteki QTextEdit metin girişini sağlar.
+    QPainter çakışması olmaz çünkü kenarlık parent widget'ta çiziliyor.
+    """
+
+    def __init__(self, placeholder="", parent=None):
+        super().__init__(parent)
+        self._t = 0.0
+        self._h = 0.0
+        self._anim_in = QPropertyAnimation(self, b"focusT", self)
+        self._anim_in.setDuration(220)
+        self._anim_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim_out = QPropertyAnimation(self, b"focusT", self)
+        self._anim_out.setDuration(180)
+        self._anim_out.setEasingCurve(QEasingCurve.Type.InCubic)
+        self._anim_hov_in = QPropertyAnimation(self, b"hoverT", self)
+        self._anim_hov_in.setDuration(150)
+        self._anim_hov_out = QPropertyAnimation(self, b"hoverT", self)
+        self._anim_hov_out.setDuration(150)
+
+        # İç QTextEdit — sınır/arka plan yok, wrapper çiziyor
+        self._edit = QTextEdit()
+        if placeholder:
+            self._edit.setPlaceholderText(placeholder)
+        self._edit.setStyleSheet(
+            f"QTextEdit {{ background: transparent; border: none; "
+            f"font-size: 13px; color: {CLR_TEXT}; padding: 4px 8px; }}"
+        )
+        self._edit.installEventFilter(self)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(2, 2, 2, 2)
+        lay.addWidget(self._edit)
+        self.setStyleSheet("background: transparent;")
+
+    # QTextEdit API proxy'leri — dışarıdan toPlainText(), setPlaceholderText() çalışsın
+    def toPlainText(self):
+        return self._edit.toPlainText()
+
+    def setPlaceholderText(self, t):
+        self._edit.setPlaceholderText(t)
+
+    def document(self):
+        return self._edit.document()
+
+    def _get_t(self):
+        return self._t
+
+    def _set_t(self, v):
+        self._t = v
+        self.update()
+
+    focusT = pyqtProperty(float, _get_t, _set_t)
+
+    def _get_h(self):
+        return self._h
+
+    def _set_h(self, v):
+        self._h = v
+        self.update()
+
+    hoverT = pyqtProperty(float, _get_h, _set_h)
+
+    def eventFilter(self, obj, event):
+        if obj is self._edit:
+            if event.type() == event.Type.FocusIn:
+                self._anim_out.stop()
+                self._anim_in.setStartValue(self._t)
+                self._anim_in.setEndValue(1.0)
+                self._anim_in.start()
+            elif event.type() == event.Type.FocusOut:
+                self._anim_in.stop()
+                self._anim_out.setStartValue(self._t)
+                self._anim_out.setEndValue(0.0)
+                self._anim_out.start()
+            elif event.type() == event.Type.Enter:
+                self._anim_hov_out.stop()
+                self._anim_hov_in.setStartValue(self._h)
+                self._anim_hov_in.setEndValue(1.0)
+                self._anim_hov_in.start()
+            elif event.type() == event.Type.Leave:
+                self._anim_hov_in.stop()
+                self._anim_hov_out.setStartValue(self._h)
+                self._anim_hov_out.setEndValue(0.0)
+                self._anim_hov_out.start()
+        return super().eventFilter(obj, event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        t = max(self._t, self._h * 0.35)
+
+        path = QPainterPath()
+        path.addRoundedRect(1.5, 1.5, w - 3, h - 3, 8, 8)
+        p.fillPath(path, QColor(CLR_BG))
+
+        if t > 0.01:
+            p.setPen(QPen(QColor(248, 180, 88, int(55 * t)), 5.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+
+        br = int(_BORDER_RGB[0] + (_ACCENT_RGB[0] - _BORDER_RGB[0]) * t)
+        bg_ = int(_BORDER_RGB[1] + (_ACCENT_RGB[1] - _BORDER_RGB[1]) * t)
+        bb = int(_BORDER_RGB[2] + (_ACCENT_RGB[2] - _BORDER_RGB[2]) * t)
+        p.setPen(QPen(QColor(br, bg_, bb), 1.5 + 0.5 * t))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+        p.end()
+
+
+# ── El çizimi arama ikonu ────────────────────────────────────────────────
+
+
+class _SearchIcon(QWidget):
+    def __init__(self, size: int = 16, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        s = self.width()
+        pen = QPen(
+            QColor(CLR_TEXT_DIM),
+            max(1.3, s / 11) if s > 0 else 1.3,
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+        )
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        d = s * 0.62
+        p.drawEllipse(int(s * 0.06), int(s * 0.06), int(d), int(d))
+        p.drawLine(
+            int(s * 0.06 + d * 0.82),
+            int(s * 0.06 + d * 0.82),
+            int(s * 0.96),
+            int(s * 0.96),
+        )
+        p.end()
+
+
+class _CalendarDateEdit(QWidget):
+    """
+    Tarih seçici — tıklayınca takvim popup açılır.
+    Spin box davranışı (ok tuşları, scroll) tamamen devre dışı.
+    """
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(272)
-        self.setStyleSheet(
-            f"background: {CLR_SURFACE}; border-left: 1px solid {CLR_BORDER};"
+        self.setFixedHeight(40)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._t = 0.0
+        self._h = 0.0
+        self._anim_in = QPropertyAnimation(self, b"focusT2", self)
+        self._anim_in.setDuration(220)
+        self._anim_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim_out = QPropertyAnimation(self, b"focusT2", self)
+        self._anim_out.setDuration(180)
+        self._anim_out.setEasingCurve(QEasingCurve.Type.InCubic)
+        self._anim_hov_in = QPropertyAnimation(self, b"hoverT2", self)
+        self._anim_hov_in.setDuration(150)
+        self._anim_hov_out = QPropertyAnimation(self, b"hoverT2", self)
+        self._anim_hov_out.setDuration(150)
+
+        self._date = QDate.currentDate()
+
+        # Gizli QDateEdit — sadece takvim popup'ı için kullanılır
+        self._picker = QDateEdit(self)
+        self._picker.setCalendarPopup(True)
+        self._picker.setDate(self._date)
+        self._picker.hide()
+        self._picker.dateChanged.connect(self._on_date_changed)
+
+        self.setStyleSheet("background: transparent;")
+
+    def _on_date_changed(self, d):
+        self._date = d
+        self.update()
+        # Animasyon söndür
+        self._anim_in.stop()
+        self._anim_out.setStartValue(self._t)
+        self._anim_out.setEndValue(0.0)
+        self._anim_out.start()
+
+    # Proxy metodları
+    def date(self):
+        return self._date
+
+    def setDate(self, d):
+        self._date = d
+        self._picker.setDate(d)
+
+    def _get_t2(self):
+        return self._t
+
+    def _set_t2(self, v):
+        self._t = v
+        self.update()
+
+    focusT2 = pyqtProperty(float, _get_t2, _set_t2)
+
+    def _get_h2(self):
+        return self._h
+
+    def _set_h2(self, v):
+        self._h = v
+        self.update()
+
+    hoverT2 = pyqtProperty(float, _get_h2, _set_h2)
+
+    def mousePressEvent(self, event):
+        # Animasyon başlat
+        self._anim_out.stop()
+        self._anim_in.setStartValue(self._t)
+        self._anim_in.setEndValue(1.0)
+        self._anim_in.start()
+        # Gizli picker'ı ekranın dışında konumlandır, popup aç
+        self._picker.move(-9999, -9999)
+        self._picker.show()
+        cal = self._picker.calendarWidget()
+        if cal:
+            popup = cal.parent()
+            if popup:
+                pos = self.mapToGlobal(self.rect().bottomLeft())
+                popup.move(pos)
+                popup.show()
+                cal.show()
+        super().mousePressEvent(event)
+
+    def enterEvent(self, e):
+        self._anim_hov_out.stop()
+        self._anim_hov_in.setStartValue(self._h)
+        self._anim_hov_in.setEndValue(1.0)
+        self._anim_hov_in.start()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._anim_hov_in.stop()
+        self._anim_hov_out.setStartValue(self._h)
+        self._anim_hov_out.setEndValue(0.0)
+        self._anim_hov_out.start()
+        if (
+            not self._picker.calendarWidget()
+            or not self._picker.calendarWidget().isVisible()
+        ):
+            self._anim_in.stop()
+            self._anim_out.setStartValue(self._t)
+            self._anim_out.setEndValue(0.0)
+            self._anim_out.start()
+        super().leaveEvent(e)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        t = max(self._t, self._h * 0.35)
+
+        # Arka plan + kenarlık
+        path = QPainterPath()
+        path.addRoundedRect(1.5, 1.5, w - 3, h - 3, 8, 8)
+        p.fillPath(path, QColor(CLR_BG))
+
+        if t > 0.01:
+            p.setPen(QPen(QColor(248, 180, 88, int(55 * t)), 5.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+
+        br = int(_BORDER_RGB[0] + (_ACCENT_RGB[0] - _BORDER_RGB[0]) * t)
+        bg_ = int(_BORDER_RGB[1] + (_ACCENT_RGB[1] - _BORDER_RGB[1]) * t)
+        bb = int(_BORDER_RGB[2] + (_ACCENT_RGB[2] - _BORDER_RGB[2]) * t)
+        p.setPen(QPen(QColor(br, bg_, bb), 1.5 + 0.5 * t))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+
+        # Tarih metni
+        font = p.font()
+        font.setPointSize(13)
+        font.setFamily("Inter, Segoe UI, Arial")
+        p.setFont(font)
+        p.setPen(QColor(CLR_TEXT))
+        text_rect = self.rect().adjusted(12, 0, -38, 0)
+        p.drawText(
+            text_rect, Qt.AlignmentFlag.AlignVCenter, self._date.toString("dd.MM.yyyy")
         )
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        # Başlık
-        hdr = QWidget()
-        hdr.setFixedHeight(52)
-        hdr.setStyleSheet(
-            f"background: {CLR_SURFACE}; border-bottom: 1px solid {CLR_BORDER};"
+        # Takvim ikonu
+        iw2, ih2 = 16, 16
+        ix = w - 28
+        iy = (h - ih2) // 2
+        ic = QColor(CLR_ACCENT if t > 0.3 else CLR_TEXT_MUTED)
+        pen = QPen(
+            ic,
+            1.3,
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
         )
-        h = QHBoxLayout(hdr)
-        h.setContentsMargins(20, 0, 20, 0)
-        t = QLabel("Özet")
-        t.setStyleSheet(f"color: {CLR_TEXT}; font-size: 14px; font-weight: 700;")
-        h.addWidget(t)
-        root.addWidget(hdr)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(ix, iy + 1, iw2, ih2 - 1, 2, 2)
+        p.drawLine(ix, iy + 4, ix + iw2, iy + 4)
+        p.drawLine(ix + 4, iy, ix + 4, iy + 4)
+        p.drawLine(ix + iw2 - 4, iy, ix + iw2 - 4, iy + 4)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(ic)
+        for ri in range(2):
+            for ci in range(3):
+                p.drawRect(ix + 3 + ci * 4, iy + 7 + ri * 4, 2, 2)
+        p.end()
 
-        # KDV checkbox
-        vw = QWidget()
-        vw.setStyleSheet(f"background: {CLR_SURFACE};")
-        vl = QHBoxLayout(vw)
-        vl.setContentsMargins(20, 14, 20, 14)
-        self.vat_checkbox = QCheckBox("KDV Dahil (%20)")
-        vl.addWidget(self.vat_checkbox)
-        root.addWidget(vw)
-        root.addWidget(Divider())
 
-        # Satırlar
-        rows = QWidget()
-        rows.setStyleSheet(f"background: {CLR_SURFACE};")
-        rl = QVBoxLayout(rows)
-        rl.setContentsMargins(20, 18, 20, 18)
-        rl.setSpacing(14)
-        self.subtotal_label = self._row(rl, "Ara Toplam")
-        self.vat_label = self._row(rl, "KDV (%20)")
-        root.addWidget(rows)
-        root.addWidget(Divider())
+class _StyledComboBox(QComboBox):
+    """
+    QComboBox subclass — drop-down bölgesine el çizimi aşağı ok ikonu ekler.
+    Hover animasyonu eklendi.
+    """
 
-        # Genel toplam bloğu — amber vurgulu
-        total_card = QWidget()
-        total_card.setFixedHeight(82)
-        total_card.setStyleSheet(
-            f"background: {CLR_BG}; border-bottom: 1px solid {CLR_BORDER};"
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(40)
+        self._h = 0.0
+        self._anim_hov_in = QPropertyAnimation(self, b"hoverT3", self)
+        self._anim_hov_in.setDuration(150)
+        self._anim_hov_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim_hov_out = QPropertyAnimation(self, b"hoverT3", self)
+        self._anim_hov_out.setDuration(150)
+        self.setStyleSheet(f"""
+            QComboBox {{
+                background: {CLR_BG}; color: {CLR_TEXT};
+                border: 1.5px solid {CLR_BORDER}; border-radius: 8px;
+                padding: 6px 38px 6px 12px; font-size: 13px;
+            }}
+            QComboBox:focus {{ border-color: {CLR_ACCENT}; }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 38px;
+                subcontrol-origin: border;
+                subcontrol-position: right center;
+                background: transparent;
+            }}
+            QComboBox::down-arrow {{ image: none; width: 0; height: 0; }}
+            QComboBox QAbstractItemView {{
+                background: {CLR_SURFACE};
+                border: 1px solid {CLR_BORDER};
+                selection-background-color: {CLR_ACCENT_SOFT};
+                selection-color: {CLR_ACCENT};
+                outline: none;
+                padding: 4px;
+            }}
+            QComboBox QAbstractItemView::item {{
+                padding: 8px 12px;
+                color: {CLR_TEXT};
+                min-height: 32px;
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background: {CLR_HOVER};
+            }}
+            """)
+
+    def _get_h3(self):
+        return self._h
+
+    def _set_h3(self, v):
+        self._h = v
+        self.update()
+
+    hoverT3 = pyqtProperty(float, _get_h3, _set_h3)
+
+    def enterEvent(self, e):
+        self._anim_hov_out.stop()
+        self._anim_hov_in.setStartValue(self._h)
+        self._anim_hov_in.setEndValue(1.0)
+        self._anim_hov_in.start()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._anim_hov_in.stop()
+        self._anim_hov_out.setStartValue(self._h)
+        self._anim_hov_out.setEndValue(0.0)
+        self._anim_hov_out.start()
+        super().leaveEvent(e)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        t = self._h * 0.35
+
+        # Eski drop-down ikonunu kapat
+        zone_w = 38
+        zone_x = w - zone_w
+        p.fillRect(zone_x, 2, zone_w - 2, h - 4, QColor(CLR_BG))
+
+        # Animasyonlu kenarlık
+        path = QPainterPath()
+        path.addRoundedRect(1.5, 1.5, w - 3, h - 3, 8, 8)
+        if t > 0.01:
+            p.setPen(QPen(QColor(248, 180, 88, int(55 * t)), 5.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+        br = int(_BORDER_RGB[0] + (_ACCENT_RGB[0] - _BORDER_RGB[0]) * t)
+        bg_ = int(_BORDER_RGB[1] + (_ACCENT_RGB[1] - _BORDER_RGB[1]) * t)
+        bb = int(_BORDER_RGB[2] + (_ACCENT_RGB[2] - _BORDER_RGB[2]) * t)
+        p.setPen(QPen(QColor(br, bg_, bb), 1.5 + 0.5 * t))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+
+        # V şeklinde aşağı ok (chevron)
+        iw2, ih2 = 12, 8
+        ix = w - 26
+        iy = (h - ih2) // 2
+        pen = QPen(
+            QColor(CLR_TEXT_MUTED),
+            1.6,
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
         )
-        tc = QVBoxLayout(total_card)
-        tc.setContentsMargins(20, 0, 20, 0)
-        tc.setSpacing(2)
-        tc_lbl = QLabel("GENEL TOPLAM")
-        tc_lbl.setStyleSheet(
-            f"color: {CLR_TEXT_DIM}; font-size: 10px; font-weight: 700; letter-spacing: 0.7px;"
-        )
-        self.total_label = QLabel("0,00 TL")
-        self.total_label.setStyleSheet(
-            f"color: {CLR_ACCENT}; font-size: 24px; font-weight: 700;"
-        )
-        tc.addStretch()
-        tc.addWidget(tc_lbl)
-        tc.addWidget(self.total_label)
-        tc.addStretch()
-        root.addWidget(total_card)
-
-        root.addStretch()
-
-        # PDF butonu
-        pw = QWidget()
-        pw.setStyleSheet(f"background: {CLR_SURFACE};")
-        pl = QVBoxLayout(pw)
-        pl.setContentsMargins(16, 16, 16, 18)
-        self.pdf_button = AccentButton("PDF Oluştur")
-        self.pdf_button.setFixedHeight(42)
-        pl.addWidget(self.pdf_button)
-        root.addWidget(pw)
-
-    def _row(self, layout, label_text: str) -> QLabel:
-        row = QWidget()
-        row.setStyleSheet("background: transparent;")
-        rl = QHBoxLayout(row)
-        rl.setContentsMargins(0, 0, 0, 0)
-        lbl = QLabel(label_text)
-        lbl.setStyleSheet(f"color: {CLR_TEXT_MUTED}; font-size: 12px;")
-        val = QLabel("0,00 TL")
-        val.setStyleSheet(f"color: {CLR_TEXT}; font-size: 13px; font-weight: 600;")
-        val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        rl.addWidget(lbl)
-        rl.addStretch()
-        rl.addWidget(val)
-        layout.addWidget(row)
-        return val
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        arrow = QPainterPath()
+        arrow.moveTo(ix, iy)
+        arrow.lineTo(ix + iw2 / 2, iy + ih2)
+        arrow.lineTo(ix + iw2, iy)
+        p.drawPath(arrow)
+        p.end()
 
 
-# ── Miktar kontrol widget'ı ────────────────────────────────────────────────
+# ── Miktar kontrol widget'ı ───────────────────────────────────────────────
 
 
 class QuantityWidget(QWidget):
@@ -209,7 +674,6 @@ class QuantityWidget(QWidget):
             f"QPushButton:hover {{ background: {CLR_ACCENT}; color: #111111; border-color: {CLR_ACCENT}; }}"
             f"QPushButton:pressed {{ background: {CLR_ACCENT_PRESSED}; }}"
         )
-
         self._btn_m = QPushButton("−")
         self._btn_m.setStyleSheet(
             btn_ss + "QPushButton { border-radius: 5px 0 0 5px; }"
@@ -229,7 +693,6 @@ class QuantityWidget(QWidget):
             f"font-size: 13px; color: {CLR_TEXT}; padding: 0; }}"
             f"QSpinBox:focus {{ border-color: {CLR_ACCENT}; }}"
         )
-
         self._btn_p = QPushButton("+")
         self._btn_p.setStyleSheet(
             btn_ss + "QPushButton { border-radius: 0 5px 5px 0; }"
@@ -249,7 +712,7 @@ class QuantityWidget(QWidget):
         self._spin.valueChanged.connect(lambda v, code=product_code: on_change(code, v))
 
 
-# ── Teklif tablosu ─────────────────────────────────────────────────────────
+# ── Teklif tablosu ────────────────────────────────────────────────────────
 
 
 class OfferTable(QTableWidget):
@@ -257,77 +720,178 @@ class OfferTable(QTableWidget):
         super().__init__(parent)
         self.setColumnCount(6)
         self.setHorizontalHeaderLabels(
-            ["Kod", "Ürün", "Miktar", "Birim Fiyat", "Tutar", ""]
+            ["Ürün Kodu", "Ürün Adı", "Miktar", "Birim Fiyat", "Tutar", ""]
         )
         self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.setShowGrid(False)
-        self.setAlternatingRowColors(True)
+        self.setAlternatingRowColors(False)
         self.verticalHeader().setVisible(False)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         self.setStyleSheet(f"""
             QTableWidget {{
                 background: {CLR_BG};
-                alternate-background-color: {CLR_SURFACE};
                 border: none;
-                border-radius: 0;
                 gridline-color: transparent;
                 outline: none;
+                font-size: 13px;
             }}
             QTableWidget::item {{
                 padding: 0 12px;
                 border-bottom: 1px solid {CLR_BORDER};
                 color: {CLR_TEXT};
-                font-size: 13px;
             }}
-            QTableWidget::item:hover {{
-                background: {CLR_HOVER};
-            }}
+            QTableWidget::item:hover {{ background: {CLR_HOVER}; }}
             QTableWidget::item:selected {{
                 background: {CLR_ACCENT_SOFT};
                 color: {CLR_TEXT};
-                border-left: 3px solid {CLR_ACCENT};
             }}
             QHeaderView {{
                 background: {CLR_SURFACE};
             }}
             QHeaderView::section {{
                 background: {CLR_SURFACE};
-                color: {CLR_TEXT_DIM};
-                font-size: 10px;
+                color: {CLR_TEXT_MUTED};
+                font-size: 12px;
                 font-weight: 700;
-                letter-spacing: 0.5px;
                 padding: 0 12px;
-                height: 36px;
+                height: 40px;
                 border: none;
                 border-bottom: 1px solid {CLR_BORDER};
-                border-right: 1px solid {CLR_BORDER};
             }}
-            QHeaderView::section:last {{ border-right: none; }}
-            """)
+            QHeaderView::section:first {{
+                color: {CLR_ACCENT};
+            }}
+        """)
 
         hdr = self.horizontalHeader()
+        hdr.setDefaultAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         hdr.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.setColumnWidth(0, 110)
-        self.setColumnWidth(2, 128)
-        self.setColumnWidth(3, 130)
-        self.setColumnWidth(4, 118)
-        self.setColumnWidth(5, 48)
+        self.setColumnWidth(0, 130)
+        self.setColumnWidth(2, 110)
+        self.setColumnWidth(3, 120)
+        self.setColumnWidth(4, 110)
+        self.setColumnWidth(5, 44)
         self.verticalHeader().setDefaultSectionSize(52)
 
 
-# ── Ana teklif penceresi ───────────────────────────────────────────────────
+# ── Toplamlar paneli ──────────────────────────────────────────────────────
+
+
+class TotalsWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(300)
+        self.setStyleSheet(f"background: {CLR_SURFACE}; border-radius: 12px;")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 24, 24, 20)
+        root.setSpacing(0)
+
+        # Başlık
+        title = QLabel("Teklif Özeti")
+        title.setStyleSheet(
+            f"color: {CLR_TEXT}; font-size: 18px; font-weight: 700; background: transparent;"
+        )
+        root.addWidget(title)
+        root.addSpacing(20)
+        root.addWidget(_Divider())
+        root.addSpacing(20)
+
+        # Satırlar
+        self.subtotal_label = self._row(root, "Ara Toplam")
+        root.addSpacing(16)
+        self.vat_label = self._row(root, "KDV (%20)")
+        root.addSpacing(20)
+        root.addWidget(_Divider())
+        root.addSpacing(20)
+
+        # Genel toplam
+        gt_row = QWidget()
+        gt_row.setStyleSheet("background: transparent;")
+        gt_lay = QHBoxLayout(gt_row)
+        gt_lay.setContentsMargins(0, 0, 0, 0)
+        gt_lbl = QLabel("Genel Toplam")
+        gt_lbl.setStyleSheet(
+            f"color: {CLR_ACCENT}; font-size: 15px; font-weight: 700; background: transparent;"
+        )
+        self.total_label = QLabel("0,00 TL")
+        self.total_label.setStyleSheet(
+            f"color: {CLR_ACCENT}; font-size: 22px; font-weight: 800; background: transparent;"
+        )
+        self.total_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        gt_lay.addWidget(gt_lbl)
+        gt_lay.addStretch()
+        gt_lay.addWidget(self.total_label)
+        root.addWidget(gt_row)
+
+        root.addStretch()
+
+        # KDV checkbox
+        self.vat_checkbox = QCheckBox("KDV Dahil (%20)")
+        self.vat_checkbox.setStyleSheet(
+            f"color: {CLR_TEXT_MUTED}; font-size: 12px; background: transparent;"
+        )
+        root.addWidget(self.vat_checkbox)
+        root.addSpacing(14)
+
+        # PDF/Teklif oluştur butonu
+        self.pdf_button = QPushButton("  Teklifi Oluştur")
+        self.pdf_button.setFixedHeight(54)
+        self.pdf_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pdf_button.setStyleSheet(f"""
+            QPushButton {{
+                background: {CLR_ACCENT};
+                color: #111111;
+                border: none;
+                border-radius: 10px;
+                font-size: 14px;
+                font-weight: 700;
+                padding-left: 8px;
+            }}
+            QPushButton:hover {{ background: {CLR_ACCENT_HOVER}; }}
+            QPushButton:pressed {{ background: {CLR_ACCENT_PRESSED}; }}
+        """)
+        root.addWidget(self.pdf_button)
+
+    def _row(self, layout, label_text: str) -> QLabel:
+        row = QWidget()
+        row.setStyleSheet("background: transparent;")
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel(label_text)
+        lbl.setStyleSheet(
+            f"color: {CLR_TEXT_MUTED}; font-size: 13px; background: transparent;"
+        )
+        val = QLabel("0,00 TL")
+        val.setStyleSheet(
+            f"color: {CLR_TEXT}; font-size: 13px; font-weight: 600; background: transparent;"
+        )
+        val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        rl.addWidget(lbl)
+        rl.addStretch()
+        rl.addWidget(val)
+        layout.addWidget(row)
+        return val
+
+
+# ── Ana teklif penceresi ──────────────────────────────────────────────────
 
 
 class OfferWindow(QWidget):
 
-    go_back = pyqtSignal()  # Ana ekrana dön
+    go_back = pyqtSignal()
 
     OFFER_COLUMNS = {
         "product_code": 0,
@@ -344,10 +908,11 @@ class OfferWindow(QWidget):
         self._setup_ui()
         self._connect_signals()
 
-    # ── UI kurulumu ────────────────────────────────────────────────────────
+    # ── UI kurulumu ───────────────────────────────────────────────────────
 
     def _setup_ui(self) -> None:
         self.setWindowTitle("Teklif Oluştur")
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         _w, _h = get_window_size()
         self.setFixedSize(_w, _h)
         self.setStyleSheet(f"background: {CLR_BG};")
@@ -356,153 +921,208 @@ class OfferWindow(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Üst bar ────────────────────────────────────────────────────
+        # ── Üst bar ────────────────────────────────────────────────
         topbar = QWidget()
-        topbar.setFixedHeight(60)
+        topbar.setFixedHeight(56)
         topbar.setStyleSheet(
             f"background: {CLR_SURFACE}; border-bottom: 1px solid {CLR_BORDER};"
         )
         tb = QHBoxLayout(topbar)
         tb.setContentsMargins(20, 0, 24, 0)
-        tb.setSpacing(14)
+        tb.setSpacing(10)
 
-        back_btn = QPushButton("←")
-        back_btn.setProperty("class", "ghost")
-        back_btn.setFixedSize(34, 34)
-        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        back_btn.setStyleSheet(
-            f"QPushButton {{ background: {CLR_HOVER}; color: {CLR_TEXT_MUTED}; "
-            f"border: 1px solid {CLR_BORDER}; border-radius: 8px; font-size: 15px; }}"
-            f"QPushButton:hover {{ background: {CLR_HOVER2}; color: {CLR_TEXT}; }}"
-        )
-        back_btn.clicked.connect(self.go_back)
+        # Tıklanabilir belge ikonu — ana sayfaya dön
+        from splash_window import LargeDocIcon, IconSweepButton
 
-        win_title = QLabel("Yeni Teklif")
+        logo_btn = IconSweepButton(height=40)
+        logo_btn.setFixedSize(40, 40)
+        logo_btn.clicked.connect(self.go_back)
+        logo_lay = QHBoxLayout(logo_btn)
+        logo_lay.setContentsMargins(0, 0, 0, 0)
+        logo_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_lay.addWidget(LargeDocIcon(size=20))
+
+        win_title = QLabel("Teklif Oluştur")
         win_title.setStyleSheet(
-            f"color: {CLR_TEXT}; font-size: 15px; font-weight: 700;"
+            f"color: {CLR_TEXT}; font-size: 16px; font-weight: 700; background: transparent;"
         )
 
-        # Vurgu çizgisi (ince amber şerit)
-        dot = QLabel("◆")
-        dot.setStyleSheet(f"color: {CLR_ACCENT}; font-size: 12px;")
-
-        tb.addWidget(back_btn)
-        tb.addWidget(dot)
+        tb.addWidget(logo_btn)
         tb.addWidget(win_title)
         tb.addStretch()
         root.addWidget(topbar)
 
-        # ── Gövde ──────────────────────────────────────────────────────
-        body = QWidget()
-        body_lay = QHBoxLayout(body)
-        body_lay.setContentsMargins(0, 0, 0, 0)
-        body_lay.setSpacing(0)
+        # ── Ana içerik (padding ile) ────────────────────────────────
+        content = QWidget()
+        content.setStyleSheet(f"background: {CLR_BG};")
+        cl = QVBoxLayout(content)
+        cl.setContentsMargins(20, 16, 20, 16)
+        cl.setSpacing(14)
 
-        # Sol: form + tablo
-        left = QWidget()
-        left.setStyleSheet(f"background: {CLR_BG};")
-        ll = QVBoxLayout(left)
-        ll.setContentsMargins(0, 0, 0, 0)
-        ll.setSpacing(0)
-
-        # Müşteri bilgileri satırı
-        cbar = QWidget()
-        cbar.setFixedHeight(96)
-        cbar.setStyleSheet(
-            f"background: {CLR_BG}; border-bottom: 1px solid {CLR_BORDER};"
+        # ── Üst form kartı ──────────────────────────────────────────
+        form_card = QWidget()
+        form_card.setStyleSheet(
+            f"background: {CLR_SURFACE}; border-radius: 12px; border: 1px solid {CLR_BORDER};"
         )
-        cb = QHBoxLayout(cbar)
-        cb.setContentsMargins(24, 12, 24, 12)
-        cb.setSpacing(16)
+        fc = QVBoxLayout(form_card)
+        fc.setContentsMargins(20, 18, 20, 18)
+        fc.setSpacing(14)
 
-        def field(label, widget, stretch=1):
-            w = QVBoxLayout()
-            w.setSpacing(5)
-            w.addWidget(FieldLabel(label))
-            w.addWidget(widget)
-            cb.addLayout(w, stretch)
+        # Satır 1: Müşteri Adı | Geçerlilik Tarihi | Müşteri Adresi (sağda uzun)
+        row1 = QHBoxLayout()
+        row1.setSpacing(16)
 
-        self.customer_input = QLineEdit()
-        self.customer_input.setPlaceholderText("Müşteri adını giriniz…")
-        self.customer_input.setFixedHeight(38)
+        # Sol blok: Müşteri Adı + Ödeme Tipi
+        left_block = QVBoxLayout()
+        left_block.setSpacing(14)
 
-        self.validity_date_input = QDateEdit()
-        self.validity_date_input.setCalendarPopup(True)
-        self.validity_date_input.setDisplayFormat("dd.MM.yyyy")
-        self.validity_date_input.setDate(QDate.currentDate().addDays(30))
-        self.validity_date_input.setFixedHeight(38)
+        mu_lay = QVBoxLayout()
+        mu_lay.setSpacing(5)
+        mu_lay.addWidget(_FieldLabel("Müşteri Adı"))
+        self.customer_input = _AnimatedInput("Müşteri seçin...")
+        mu_lay.addWidget(self.customer_input)
+        left_block.addLayout(mu_lay)
 
-        self.payment_type_combo = QComboBox()
+        pt_lay = QVBoxLayout()
+        pt_lay.setSpacing(5)
+        pt_lay.addWidget(_FieldLabel("Ödeme Tipi"))
+        self.payment_type_combo = _StyledComboBox()
         self.payment_type_combo.addItems(["Havale / EFT", "Kredi Kartı"])
-        self.payment_type_combo.setFixedHeight(38)
+        pt_lay.addWidget(self.payment_type_combo)
+        left_block.addLayout(pt_lay)
 
-        field("Müşteri Adı", self.customer_input, 2)
+        row1.addLayout(left_block, 2)
 
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.VLine)
-        sep.setStyleSheet(f"color: {CLR_BORDER}; background: {CLR_BORDER};")
-        sep.setFixedWidth(1)
-        cb.addWidget(sep)
+        # Orta blok: Geçerlilik Tarihi + KDV
+        mid_block = QVBoxLayout()
+        mid_block.setSpacing(25)
 
-        field("Geçerlilik Tarihi", self.validity_date_input, 1)
-        field("Ödeme Tipi", self.payment_type_combo, 1)
-        ll.addWidget(cbar)
+        date_lay = QVBoxLayout()
+        date_lay.setSpacing(0)
+        date_lay.addWidget(_FieldLabel("Geçerlilik Tarihi"))
+        self.validity_date_input = _CalendarDateEdit()
+        self.validity_date_input.setDate(QDate.currentDate().addDays(30))
+        date_lay.addWidget(self.validity_date_input)
+        mid_block.addLayout(date_lay)
 
-        # Adres satırı
-        abar = QWidget()
-        abar.setFixedHeight(62)
-        abar.setStyleSheet(
-            f"background: {CLR_BG}; border-bottom: 1px solid {CLR_BORDER};"
+        self.vat_checkbox = QCheckBox("KDV Dahil (%20)")
+        self.vat_checkbox.setStyleSheet(f"""
+            QCheckBox {{
+                color: {CLR_TEXT};
+                font-size: 13px;
+                font-weight: 600;
+                background: transparent;
+                spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 18px; height: 18px;
+                border: 1.5px solid {CLR_BORDER_DARK};
+                border-radius: 4px;
+                background: {CLR_SURFACE};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {CLR_ACCENT};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {CLR_ACCENT};
+                border-color: {CLR_ACCENT};
+            }}
+            """)
+        kdv_wrap = QVBoxLayout()
+        kdv_wrap.setSpacing(5)
+        kdv_wrap.addSpacing(18)  # _FieldLabel yüksekliğiyle hizala
+        kdv_wrap.addWidget(self.vat_checkbox)
+        mid_block.addLayout(kdv_wrap)
+
+        row1.addLayout(mid_block, 2)
+        mid_block.addSpacing(10)
+
+        # Sağ blok: Müşteri Adresi (çok satırlı, tam yükseklikte)
+        addr_block = QVBoxLayout()
+        addr_block.setSpacing(5)
+        addr_block.addWidget(_FieldLabel("Müşteri Adresi"))
+        self.customer_address_input = _AnimatedTextEdit("Müşteri adresi girin...")
+        addr_block.addWidget(self.customer_address_input, 1)
+        row1.addLayout(addr_block, 3)
+
+        fc.addLayout(row1)
+        cl.addWidget(form_card)
+
+        # ── Alt alan: tablo + sağ panel ─────────────────────────────
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(14)
+
+        # Sol: arama + tablo kartı
+        table_card = QWidget()
+        table_card.setStyleSheet(
+            f"background: {CLR_SURFACE}; border-radius: 12px; border: 1px solid {CLR_BORDER};"
         )
-        ab = QHBoxLayout(abar)
-        ab.setContentsMargins(24, 8, 24, 8)
-        ab.setSpacing(12)
-        ab.addWidget(FieldLabel("Müşteri Adresi"))
-        self.customer_address_input = QTextEdit()
-        self.customer_address_input.setPlaceholderText("Müşteri adresini giriniz…")
-        self.customer_address_input.setFixedHeight(40)
-        self.customer_address_input.setStyleSheet(
-            f"QTextEdit {{ background: {CLR_SURFACE}; border: 1.5px solid {CLR_BORDER}; "
-            f"border-radius: 8px; padding: 6px 10px; font-size: 13px; color: {CLR_TEXT}; }}"
-            f"QTextEdit:focus {{ border-color: {CLR_ACCENT}; }}"
-        )
-        ab.addWidget(self.customer_address_input, 1)
-        ll.addWidget(abar)
+        tc = QVBoxLayout(table_card)
+        tc.setContentsMargins(16, 14, 16, 14)
+        tc.setSpacing(10)
 
-        # Arama çubuğu
-        sbar = QWidget()
-        sbar.setFixedHeight(58)
-        sbar.setStyleSheet(
-            f"background: {CLR_BG}; border-bottom: 1px solid {CLR_BORDER};"
-        )
-        sb = QHBoxLayout(sbar)
-        sb.setContentsMargins(24, 9, 24, 9)
-
+        # Arama kutusu
         search_wrap = QWidget()
-        search_wrap.setFixedHeight(40)
+        search_wrap.setFixedHeight(38)
         search_wrap.setStyleSheet(
-            f"background: {CLR_SURFACE}; border: 1.5px solid {CLR_BORDER}; border-radius: 8px;"
+            f"background: {CLR_BG}; border: 1.5px solid {CLR_BORDER}; border-radius: 8px;"
         )
         sw = QHBoxLayout(search_wrap)
         sw.setContentsMargins(10, 0, 10, 0)
         sw.setSpacing(8)
-
-        search_icon = QLabel("⌕")
-        search_icon.setFixedWidth(20)
-        search_icon.setStyleSheet(
-            f"color: {CLR_TEXT_DIM}; font-size: 16px; border: none;"
-        )
-
+        sw.addWidget(_SearchIcon(16))
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Ürün kodu veya ürün adı ile ara…")
+        self.search_input.setPlaceholderText("Ürün ara...")
         self.search_input.setStyleSheet(
             f"QLineEdit {{ background: transparent; border: none; font-size: 13px; color: {CLR_TEXT}; }}"
         )
-
-        sw.addWidget(search_icon)
         sw.addWidget(self.search_input)
-        sb.addWidget(search_wrap)
-        ll.addWidget(sbar)
+        tc.addWidget(search_wrap)
+
+        # Tablo
+        self.offer_table = OfferTable()
+        tc.addWidget(self.offer_table, 1)
+
+        # Boş durum widget'ı (tablo içinde gösterilecek)
+        self._empty_widget = QWidget()
+        self._empty_widget.setStyleSheet("background: transparent;")
+        ew_lay = QVBoxLayout(self._empty_widget)
+        ew_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ew_lay.setSpacing(8)
+
+        # Kutu ikonu (ⓔ veya el çizimi)
+        from splash_window import LargeDocIcon as _DocIcon
+
+        # Kutu ikonu yerine unicode ⬡ → daha iyisi için özel çizim kullanalım
+        empty_icon = QLabel("⬡")
+        empty_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_icon.setStyleSheet(
+            f"color: {CLR_ACCENT}; font-size: 40px; background: transparent; "
+            f"border: 2px solid {CLR_BORDER}; border-radius: 40px; "
+            f"min-width: 80px; max-width: 80px; min-height: 80px; max-height: 80px;"
+        )
+        empty_title = QLabel("Ürün eklemek için arama yapın")
+        empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_title.setStyleSheet(
+            f"color: {CLR_TEXT}; font-size: 14px; font-weight: 600; background: transparent;"
+        )
+        empty_sub = QLabel(
+            "Ürün listesinden arama yaparak veya\nürün ekleyerek teklifinizi oluşturun."
+        )
+        empty_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_sub.setWordWrap(True)
+        empty_sub.setStyleSheet(
+            f"color: {CLR_TEXT_MUTED}; font-size: 12px; background: transparent;"
+        )
+        ew_lay.addWidget(empty_icon, 0, Qt.AlignmentFlag.AlignHCenter)
+        ew_lay.addSpacing(6)
+        ew_lay.addWidget(empty_title)
+        ew_lay.addWidget(empty_sub)
+        tc.addWidget(self._empty_widget)
+        self._empty_widget.hide()
+        self.offer_table.show()
+
+        bottom_row.addWidget(table_card, 1)
 
         # Arama popup
         self._search_popup = QListWidget(self)
@@ -523,33 +1143,35 @@ class OfferWindow(QWidget):
                 min-height: 38px;
             }}
             QListWidget::item:last {{ border-bottom: none; }}
-            QListWidget::item:hover {{
-                background: {CLR_HOVER};
-            }}
+            QListWidget::item:hover {{ background: {CLR_HOVER}; }}
             QListWidget::item:selected {{
                 background: {CLR_ACCENT_SOFT};
                 color: {CLR_ACCENT};
-                border-left: 3px solid {CLR_ACCENT};
             }}
-            """)
+        """)
         self._search_popup.hide()
 
-        # Tablo
-        self.offer_table = OfferTable()
-        ll.addWidget(self.offer_table, 1)
-
-        body_lay.addWidget(left, 1)
-
-        # Sağ: toplamlar
+        # Sağ: toplamlar paneli
         self._totals = TotalsWidget()
         self.subtotal_label = self._totals.subtotal_label
         self.vat_label = self._totals.vat_label
         self.total_label = self._totals.total_label
         self.vat_checkbox = self._totals.vat_checkbox
         self.pdf_button = self._totals.pdf_button
-        body_lay.addWidget(self._totals)
+        bottom_row.addWidget(self._totals)
 
-        root.addWidget(body, 1)
+        cl.addLayout(bottom_row, 1)
+        root.addWidget(content, 1)
+
+    def mousePressEvent(self, event):
+        """Boş alana tıklanınca odağı pencereye taşı — seçili alanlar temizlensin."""
+        from PyQt6.QtWidgets import QApplication
+
+        fw = QApplication.focusWidget()
+        if fw is not None:
+            fw.clearFocus()
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        super().mousePressEvent(event)
 
     def _connect_signals(self) -> None:
         self.search_input.textChanged.connect(self._on_search_changed)
@@ -560,7 +1182,7 @@ class OfferWindow(QWidget):
         self.vat_checkbox.stateChanged.connect(self._refresh_totals)
         self.pdf_button.clicked.connect(self._generate_pdf)
 
-    # ── Arama (business logic dokunulmadı) ────────────────────────────────
+    # ── Arama ─────────────────────────────────────────────────────────────
 
     def _on_search_changed(self, text: str) -> None:
         text = text.strip()
@@ -655,10 +1277,13 @@ class OfferWindow(QWidget):
 
     def _refresh_offer_table(self) -> None:
         self.offer_table.setRowCount(0)
+        is_empty = self._service.is_empty()
+        self.offer_table.setVisible(not is_empty)
+        self._empty_widget.setVisible(is_empty)
+
         for row, item in enumerate(self._service.items):
             self.offer_table.insertRow(row)
             self.offer_table.setRowHeight(row, 52)
-
             self.offer_table.setItem(
                 row,
                 self.OFFER_COLUMNS["product_code"],
@@ -672,7 +1297,6 @@ class OfferWindow(QWidget):
                 self.OFFER_COLUMNS["quantity"],
                 QuantityWidget(item.product_code, item.quantity, self._update_quantity),
             )
-
             price_cell = self._make_cell(f"{item.price:,.2f} TL")
             price_cell.setToolTip("Fiyatı değiştirmek için tıklayın")
             self.offer_table.setItem(row, self.OFFER_COLUMNS["price"], price_cell)
@@ -726,7 +1350,7 @@ class OfferWindow(QWidget):
             text=f"{current_price:.2f}" if current_price else "",
         )
         if not ok:
-            return None
+            return Nonemid_block.setSpacing(14)
         try:
             return max(0.0, float(text.strip().replace(",", ".")))
         except ValueError:

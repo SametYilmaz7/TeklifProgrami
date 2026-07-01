@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (
 
 from product_dialog import ProductDialog
 from offer_window import OfferWindow
-from splash_window import LargeDocIcon, AmberSweepButton
+from splash_window import LargeDocIcon, AmberSweepButton, IconSweepButton
 from theme import (
     get_window_size,
     apply_theme,
@@ -313,15 +313,8 @@ class TopBar(QWidget):
         lay.setContentsMargins(24, 0, 20, 0)
         lay.setSpacing(10)
 
-        self.back_btn = QPushButton()
+        self.back_btn = IconSweepButton(height=40)
         self.back_btn.setFixedSize(40, 40)
-        self.back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.back_btn.setStyleSheet(
-            f"QPushButton {{ background: transparent; border: 1.5px solid {CLR_ACCENT}; "
-            f"border-radius: 8px; }}"
-            f"QPushButton:hover {{ background: {CLR_ACCENT_SOFT}; }}"
-        )
-        # Buton içine ortalanmış küçük belge ikonu (ana ekrandaki ikonun küçük hali)
         back_icon_lay = QHBoxLayout(self.back_btn)
         back_icon_lay.setContentsMargins(0, 0, 0, 0)
         back_icon_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
