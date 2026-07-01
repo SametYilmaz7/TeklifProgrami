@@ -371,14 +371,13 @@ class _SearchIcon(QWidget):
 
 class _CalendarDateEdit(QWidget):
     """
-    Tarih seçici — tıklayınca takvim popup açılır.
-    Spin box davranışı (ok tuşları, scroll) tamamen devre dışı.
+    GG/AA/YYYY formatında tarih girişi.
+    QInputMask ile format zorunlu tutulur, animasyonlu kenarlık eklendi.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(40)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._t = 0.0
         self._h = 0.0
         self._anim_in = QPropertyAnimation(self, b"focusT2", self)
@@ -392,33 +391,38 @@ class _CalendarDateEdit(QWidget):
         self._anim_hov_out = QPropertyAnimation(self, b"hoverT2", self)
         self._anim_hov_out.setDuration(150)
 
-        self._date = QDate.currentDate()
+        # İç input
+        self._edit = QLineEdit()
+        self._edit.setInputMask("99/99/9999")
+        self._edit.setPlaceholderText("GG/AA/YYYY")
+        self._edit.setStyleSheet(
+            f"QLineEdit {{ background: transparent; border: none; "
+            f"font-size: 13px; color: {CLR_TEXT}; padding: 0 2px; }}"
+        )
+        self._edit.installEventFilter(self)
 
-        # Gizli QDateEdit — sadece takvim popup'ı için kullanılır
-        self._picker = QDateEdit(self)
-        self._picker.setCalendarPopup(True)
-        self._picker.setDate(self._date)
-        self._picker.hide()
-        self._picker.dateChanged.connect(self._on_date_changed)
-
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 1, 12, 1)
+        lay.addWidget(self._edit)
         self.setStyleSheet("background: transparent;")
 
-    def _on_date_changed(self, d):
-        self._date = d
-        self.update()
-        # Animasyon söndür
-        self._anim_in.stop()
-        self._anim_out.setStartValue(self._t)
-        self._anim_out.setEndValue(0.0)
-        self._anim_out.start()
-
-    # Proxy metodları
+    # QDate API proxy
     def date(self):
-        return self._date
+        txt = self._edit.text().replace("_", "").strip()
+        try:
+            parts = txt.split("/")
+            if len(parts) == 3:
+                d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+                dt = QDate(y, m, d)
+                if dt.isValid():
+                    return dt
+        except Exception:
+            pass
+        return QDate.currentDate()
 
-    def setDate(self, d):
-        self._date = d
-        self._picker.setDate(d)
+    def setDate(self, d: QDate):
+        if d.isValid():
+            self._edit.setText(d.toString("dd/MM/yyyy"))
 
     def _get_t2(self):
         return self._t
@@ -438,24 +442,29 @@ class _CalendarDateEdit(QWidget):
 
     hoverT2 = pyqtProperty(float, _get_h2, _set_h2)
 
-    def mousePressEvent(self, event):
-        # Animasyon başlat
-        self._anim_out.stop()
-        self._anim_in.setStartValue(self._t)
-        self._anim_in.setEndValue(1.0)
-        self._anim_in.start()
-        # Gizli picker'ı ekranın dışında konumlandır, popup aç
-        self._picker.move(-9999, -9999)
-        self._picker.show()
-        cal = self._picker.calendarWidget()
-        if cal:
-            popup = cal.parent()
-            if popup:
-                pos = self.mapToGlobal(self.rect().bottomLeft())
-                popup.move(pos)
-                popup.show()
-                cal.show()
-        super().mousePressEvent(event)
+    def eventFilter(self, obj, event):
+        if obj is self._edit:
+            if event.type() == event.Type.FocusIn:
+                self._anim_out.stop()
+                self._anim_in.setStartValue(self._t)
+                self._anim_in.setEndValue(1.0)
+                self._anim_in.start()
+            elif event.type() == event.Type.FocusOut:
+                self._anim_in.stop()
+                self._anim_out.setStartValue(self._t)
+                self._anim_out.setEndValue(0.0)
+                self._anim_out.start()
+            elif event.type() == event.Type.Enter:
+                self._anim_hov_out.stop()
+                self._anim_hov_in.setStartValue(self._h)
+                self._anim_hov_in.setEndValue(1.0)
+                self._anim_hov_in.start()
+            elif event.type() == event.Type.Leave:
+                self._anim_hov_in.stop()
+                self._anim_hov_out.setStartValue(self._h)
+                self._anim_hov_out.setEndValue(0.0)
+                self._anim_hov_out.start()
+        return super().eventFilter(obj, event)
 
     def enterEvent(self, e):
         self._anim_hov_out.stop()
@@ -469,14 +478,6 @@ class _CalendarDateEdit(QWidget):
         self._anim_hov_out.setStartValue(self._h)
         self._anim_hov_out.setEndValue(0.0)
         self._anim_hov_out.start()
-        if (
-            not self._picker.calendarWidget()
-            or not self._picker.calendarWidget().isVisible()
-        ):
-            self._anim_in.stop()
-            self._anim_out.setStartValue(self._t)
-            self._anim_out.setEndValue(0.0)
-            self._anim_out.start()
         super().leaveEvent(e)
 
     def paintEvent(self, event):
@@ -485,7 +486,6 @@ class _CalendarDateEdit(QWidget):
         w, h = self.width(), self.height()
         t = max(self._t, self._h * 0.35)
 
-        # Arka plan + kenarlık
         path = QPainterPath()
         path.addRoundedRect(1.5, 1.5, w - 3, h - 3, 8, 8)
         p.fillPath(path, QColor(CLR_BG))
@@ -501,41 +501,6 @@ class _CalendarDateEdit(QWidget):
         p.setPen(QPen(QColor(br, bg_, bb), 1.5 + 0.5 * t))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(path)
-
-        # Tarih metni
-        font = p.font()
-        font.setPointSize(13)
-        font.setFamily("Inter, Segoe UI, Arial")
-        p.setFont(font)
-        p.setPen(QColor(CLR_TEXT))
-        text_rect = self.rect().adjusted(12, 0, -38, 0)
-        p.drawText(
-            text_rect, Qt.AlignmentFlag.AlignVCenter, self._date.toString("dd.MM.yyyy")
-        )
-
-        # Takvim ikonu
-        iw2, ih2 = 16, 16
-        ix = w - 28
-        iy = (h - ih2) // 2
-        ic = QColor(CLR_ACCENT if t > 0.3 else CLR_TEXT_MUTED)
-        pen = QPen(
-            ic,
-            1.3,
-            Qt.PenStyle.SolidLine,
-            Qt.PenCapStyle.RoundCap,
-            Qt.PenJoinStyle.RoundJoin,
-        )
-        p.setPen(pen)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(ix, iy + 1, iw2, ih2 - 1, 2, 2)
-        p.drawLine(ix, iy + 4, ix + iw2, iy + 4)
-        p.drawLine(ix + 4, iy, ix + 4, iy + 4)
-        p.drawLine(ix + iw2 - 4, iy, ix + iw2 - 4, iy + 4)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(ic)
-        for ri in range(2):
-            for ci in range(3):
-                p.drawRect(ix + 3 + ci * 4, iy + 7 + ri * 4, 2, 2)
         p.end()
 
 
@@ -995,10 +960,10 @@ class OfferWindow(QWidget):
 
         # Orta blok: Geçerlilik Tarihi + KDV
         mid_block = QVBoxLayout()
-        mid_block.setSpacing(25)
+        mid_block.setSpacing(14)
 
         date_lay = QVBoxLayout()
-        date_lay.setSpacing(0)
+        date_lay.setSpacing(5)
         date_lay.addWidget(_FieldLabel("Geçerlilik Tarihi"))
         self.validity_date_input = _CalendarDateEdit()
         self.validity_date_input.setDate(QDate.currentDate().addDays(30))
@@ -1035,7 +1000,6 @@ class OfferWindow(QWidget):
         mid_block.addLayout(kdv_wrap)
 
         row1.addLayout(mid_block, 2)
-        mid_block.addSpacing(10)
 
         # Sağ blok: Müşteri Adresi (çok satırlı, tam yükseklikte)
         addr_block = QVBoxLayout()
@@ -1350,7 +1314,7 @@ class OfferWindow(QWidget):
             text=f"{current_price:.2f}" if current_price else "",
         )
         if not ok:
-            return Nonemid_block.setSpacing(14)
+            return None
         try:
             return max(0.0, float(text.strip().replace(",", ".")))
         except ValueError:
