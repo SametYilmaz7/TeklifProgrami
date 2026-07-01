@@ -513,7 +513,7 @@ class SplashWindow(QWidget):
         footer_inner.setStyleSheet("background: transparent;")
         fi = QHBoxLayout(footer_inner)
         fi.setContentsMargins(0, 0, 0, 0)
-        fi.setSpacing(10)
+        fi.setSpacing(5)
         fi.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         line_l = QWidget()
@@ -529,7 +529,7 @@ class SplashWindow(QWidget):
         )
         lbl_brand = QLabel("DataCrove")
         lbl_brand.setStyleSheet(
-            f"color: {C_ACCENT}; font-size: 12px; font-weight: 700; background: transparent;"
+            f"color: {C_TEXT}; font-size: 12px; font-weight: 700; background: transparent;"
         )
 
         fi.addWidget(line_l)
