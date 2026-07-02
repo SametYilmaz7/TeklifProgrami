@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QDateEdit,
     QFrame,
     QHBoxLayout,
+    QDialog,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -63,7 +64,7 @@ from theme import (
 
 VAT_RATE = 0.20
 SEARCH_POPUP_MAX_ROWS = 8
-SEARCH_POPUP_ROW_H = 42
+SEARCH_POPUP_ROW_H = 56
 
 
 # ── Ortak yardımcılar ─────────────────────────────────────────────────────
@@ -146,7 +147,6 @@ class _AnimatedInput(QLineEdit):
             "QLineEdit { background: transparent; border: none; "
             f"font-size: 13px; color: {CLR_TEXT}; padding: 0 2px; }}"
         )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
     def _get_t(self):
         return self._t
@@ -504,6 +504,117 @@ class _CalendarDateEdit(QWidget):
         p.end()
 
 
+class _PriceDialog(QDialog):
+    """Ürün fiyatı giriş diyaloğu — dark theme, amber accent."""
+
+    def __init__(self, product_name: str, current_price: float = 0.0, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Birim Fiyat")
+        self.setFixedWidth(360)
+        self.setModal(True)
+        self.setStyleSheet(f"background: {CLR_BG};")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Başlık bandı
+        header = QWidget()
+        header.setFixedHeight(52)
+        header.setStyleSheet(
+            f"background: {CLR_SURFACE}; border-bottom: 1px solid {CLR_BORDER};"
+        )
+        h_lay = QHBoxLayout(header)
+        h_lay.setContentsMargins(20, 0, 20, 0)
+        dot = QLabel("◆")
+        dot.setStyleSheet(f"color: {CLR_ACCENT}; font-size: 14px;")
+        title_lbl = QLabel("Birim Fiyat")
+        title_lbl.setStyleSheet(
+            f"color: {CLR_TEXT}; font-size: 14px; font-weight: 700;"
+        )
+        h_lay.addWidget(dot)
+        h_lay.addSpacing(8)
+        h_lay.addWidget(title_lbl)
+        h_lay.addStretch()
+        root.addWidget(header)
+
+        # Gövde
+        body = QWidget()
+        body.setStyleSheet(f"background: {CLR_BG};")
+        b_lay = QVBoxLayout(body)
+        b_lay.setContentsMargins(20, 18, 20, 18)
+        b_lay.setSpacing(12)
+
+        name_lbl = QLabel(product_name)
+        name_lbl.setWordWrap(True)
+        name_lbl.setStyleSheet(
+            f"color: {CLR_ACCENT}; font-size: 13px; font-weight: 600;"
+        )
+        b_lay.addWidget(name_lbl)
+
+        field_lbl = QLabel("BİRİM FİYAT")
+        field_lbl.setStyleSheet(
+            f"color: {CLR_TEXT_DIM}; font-size: 10px; font-weight: 700; letter-spacing: 0.7px;"
+        )
+        b_lay.addWidget(field_lbl)
+
+        self._input = _AnimatedInput()
+        self._input.setPlaceholderText("0.00")
+        if current_price:
+            self._input.setText(f"{current_price:.2f}")
+        b_lay.addWidget(self._input)
+
+        b_lay.addSpacing(4)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        btn_row.addStretch()
+
+        btn_cancel = QPushButton("İptal")
+        btn_cancel.setFixedSize(88, 38)
+        btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_cancel.setStyleSheet(
+            f"QPushButton {{ background: {CLR_SURFACE}; color: {CLR_TEXT}; "
+            f"border: 1.5px solid {CLR_BORDER}; border-radius: 8px; font-size: 13px; font-weight: 500; }}"
+            f"QPushButton:hover {{ background: {CLR_HOVER}; border-color: {CLR_BORDER_DARK}; }}"
+        )
+
+        btn_ok = QPushButton("Kaydet")
+        btn_ok.setFixedSize(96, 38)
+        btn_ok.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_ok.setStyleSheet(
+            f"QPushButton {{ background: {CLR_ACCENT}; color: #111111; "
+            f"border: none; border-radius: 8px; font-size: 13px; font-weight: 700; }}"
+            f"QPushButton:hover {{ background: {CLR_ACCENT_HOVER}; }}"
+            f"QPushButton:pressed {{ background: {CLR_ACCENT_PRESSED}; }}"
+        )
+
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_ok)
+        b_lay.addLayout(btn_row)
+        root.addWidget(body)
+
+        btn_cancel.clicked.connect(self.reject)
+        btn_ok.clicked.connect(self._on_accept)
+        self._input.returnPressed.connect(self._on_accept)
+
+    def _on_accept(self):
+        try:
+            val = float(self._input.text().strip().replace(",", "."))
+            if val < 0:
+                raise ValueError
+            self.accept()
+        except ValueError:
+            self._input.clear()
+            self._input.setPlaceholderText("Geçersiz fiyat!")
+
+    def price_value(self) -> float:
+        try:
+            return max(0.0, float(self._input.text().strip().replace(",", ".")))
+        except ValueError:
+            return 0.0
+
+
 class _StyledComboBox(QComboBox):
     """
     QComboBox subclass — drop-down bölgesine el çizimi aşağı ok ikonu ekler.
@@ -683,9 +794,9 @@ class QuantityWidget(QWidget):
 class OfferTable(QTableWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setColumnCount(6)
+        self.setColumnCount(5)
         self.setHorizontalHeaderLabels(
-            ["Ürün Kodu", "Ürün Adı", "Miktar", "Birim Fiyat", "Tutar", ""]
+            ["Ürün Kodu", "Miktar", "Birim Fiyat", "Tutar", ""]
         )
         self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -735,17 +846,15 @@ class OfferTable(QTableWidget):
         hdr.setDefaultAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        hdr.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.setColumnWidth(0, 130)
-        self.setColumnWidth(2, 110)
+        self.setColumnWidth(1, 120)
+        self.setColumnWidth(2, 130)
         self.setColumnWidth(3, 120)
-        self.setColumnWidth(4, 110)
-        self.setColumnWidth(5, 44)
+        self.setColumnWidth(4, 44)
         self.verticalHeader().setDefaultSectionSize(52)
 
 
@@ -860,11 +969,11 @@ class OfferWindow(QWidget):
 
     OFFER_COLUMNS = {
         "product_code": 0,
-        "name": 1,
-        "quantity": 2,
-        "price": 3,
-        "total": 4,
-        "delete": 5,
+        "name": 0,  # artık kullanılmıyor ama business logic uyumu için tutuldu
+        "quantity": 1,
+        "price": 2,
+        "total": 3,
+        "delete": 4,
     }
 
     def __init__(self) -> None:
@@ -926,9 +1035,7 @@ class OfferWindow(QWidget):
 
         # ── Üst form kartı ──────────────────────────────────────────
         form_card = QWidget()
-        form_card.setStyleSheet(
-            f"background: {CLR_SURFACE}; border-radius: 12px; border: 1px solid {CLR_BORDER};"
-        )
+        form_card.setStyleSheet(f"background: {CLR_SURFACE}; border-radius: 12px;")
         fc = QVBoxLayout(form_card)
         fc.setContentsMargins(20, 18, 20, 18)
         fc.setSpacing(14)
@@ -937,38 +1044,36 @@ class OfferWindow(QWidget):
         row1 = QHBoxLayout()
         row1.setSpacing(16)
 
-        # Sol blok: Müşteri Adı + Ödeme Tipi
-        left_block = QVBoxLayout()
-        left_block.setSpacing(14)
+        # Sol-Orta blok: QGridLayout ile 2 sütun tam hizalı
+        from PyQt6.QtWidgets import QGridLayout
 
-        mu_lay = QVBoxLayout()
-        mu_lay.setSpacing(5)
-        mu_lay.addWidget(_FieldLabel("Müşteri Adı"))
+        grid_widget = QWidget()
+        grid_widget.setStyleSheet("background: transparent;")
+        grid = QGridLayout(grid_widget)
+        grid.setSpacing(12)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+
+        # Satır 0: Müşteri Adı | Geçerlilik Tarihi (başlıklar)
+        grid.addWidget(_FieldLabel("Müşteri Adı"), 0, 0)
+        grid.addWidget(_FieldLabel("Geçerlilik Tarihi"), 0, 1)
+
+        # Satır 1: inputlar
         self.customer_input = _AnimatedInput("Müşteri seçin...")
-        mu_lay.addWidget(self.customer_input)
-        left_block.addLayout(mu_lay)
+        grid.addWidget(self.customer_input, 1, 0)
 
-        pt_lay = QVBoxLayout()
-        pt_lay.setSpacing(5)
-        pt_lay.addWidget(_FieldLabel("Ödeme Tipi"))
-        self.payment_type_combo = _StyledComboBox()
-        self.payment_type_combo.addItems(["Havale / EFT", "Kredi Kartı"])
-        pt_lay.addWidget(self.payment_type_combo)
-        left_block.addLayout(pt_lay)
-
-        row1.addLayout(left_block, 2)
-
-        # Orta blok: Geçerlilik Tarihi + KDV
-        mid_block = QVBoxLayout()
-        mid_block.setSpacing(14)
-
-        date_lay = QVBoxLayout()
-        date_lay.setSpacing(5)
-        date_lay.addWidget(_FieldLabel("Geçerlilik Tarihi"))
         self.validity_date_input = _CalendarDateEdit()
         self.validity_date_input.setDate(QDate.currentDate().addDays(30))
-        date_lay.addWidget(self.validity_date_input)
-        mid_block.addLayout(date_lay)
+        grid.addWidget(self.validity_date_input, 1, 1)
+
+        # Satır 2: Ödeme Tipi | KDV (başlıklar)
+        grid.addWidget(_FieldLabel("Ödeme Tipi"), 2, 0)
+
+        # Satır 3: inputlar
+        self.payment_type_combo = _StyledComboBox()
+        self.payment_type_combo.addItems(["Havale / EFT", "Kredi Kartı"])
+        grid.addWidget(self.payment_type_combo, 3, 0)
 
         self.vat_checkbox = QCheckBox("KDV Dahil (%20)")
         self.vat_checkbox.setStyleSheet(f"""
@@ -985,21 +1090,15 @@ class OfferWindow(QWidget):
                 border-radius: 4px;
                 background: {CLR_SURFACE};
             }}
-            QCheckBox::indicator:hover {{
-                border-color: {CLR_ACCENT};
-            }}
+            QCheckBox::indicator:hover {{ border-color: {CLR_ACCENT}; }}
             QCheckBox::indicator:checked {{
                 background: {CLR_ACCENT};
                 border-color: {CLR_ACCENT};
             }}
             """)
-        kdv_wrap = QVBoxLayout()
-        kdv_wrap.setSpacing(5)
-        kdv_wrap.addSpacing(18)  # _FieldLabel yüksekliğiyle hizala
-        kdv_wrap.addWidget(self.vat_checkbox)
-        mid_block.addLayout(kdv_wrap)
+        grid.addWidget(self.vat_checkbox, 3, 1, Qt.AlignmentFlag.AlignVCenter)
 
-        row1.addLayout(mid_block, 2)
+        row1.addWidget(grid_widget, 2)
 
         # Sağ blok: Müşteri Adresi (çok satırlı, tam yükseklikte)
         addr_block = QVBoxLayout()
@@ -1018,29 +1117,22 @@ class OfferWindow(QWidget):
 
         # Sol: arama + tablo kartı
         table_card = QWidget()
-        table_card.setStyleSheet(
-            f"background: {CLR_SURFACE}; border-radius: 12px; border: 1px solid {CLR_BORDER};"
-        )
+        table_card.setStyleSheet(f"background: {CLR_SURFACE}; border-radius: 12px;")
         tc = QVBoxLayout(table_card)
         tc.setContentsMargins(16, 14, 16, 14)
         tc.setSpacing(10)
 
         # Arama kutusu
+        self.search_input = _AnimatedInput("Ürün ara...")
+        self.search_input.setFixedHeight(40)
+        # Büyüteç ikonunu sol tarafta göstermek için wrapper
         search_wrap = QWidget()
-        search_wrap.setFixedHeight(38)
-        search_wrap.setStyleSheet(
-            f"background: {CLR_BG}; border: 1.5px solid {CLR_BORDER}; border-radius: 8px;"
-        )
-        sw = QHBoxLayout(search_wrap)
-        sw.setContentsMargins(10, 0, 10, 0)
-        sw.setSpacing(8)
-        sw.addWidget(_SearchIcon(16))
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Ürün ara...")
-        self.search_input.setStyleSheet(
-            f"QLineEdit {{ background: transparent; border: none; font-size: 13px; color: {CLR_TEXT}; }}"
-        )
-        sw.addWidget(self.search_input)
+        search_wrap.setFixedHeight(40)
+        search_wrap.setStyleSheet("background: transparent;")
+        sw2 = QHBoxLayout(search_wrap)
+        sw2.setContentsMargins(0, 0, 0, 0)
+        sw2.setSpacing(0)
+        sw2.addWidget(self.search_input)
         tc.addWidget(search_wrap)
 
         # Tablo
@@ -1104,7 +1196,7 @@ class OfferWindow(QWidget):
                 padding: 10px 16px;
                 border-bottom: 1px solid {CLR_BORDER};
                 color: {CLR_TEXT};
-                min-height: 38px;
+                min-height: 52px;
             }}
             QListWidget::item:last {{ border-bottom: none; }}
             QListWidget::item:hover {{ background: {CLR_HOVER}; }}
@@ -1166,10 +1258,10 @@ class OfferWindow(QWidget):
 
         sc = self.search_input.parent()
         sc_pos = sc.mapTo(self, QPoint(0, sc.height()))
-        visible_rows = min(len(results), SEARCH_POPUP_MAX_ROWS)
-        self._search_popup.setGeometry(
-            sc_pos.x(), sc_pos.y(), sc.width(), visible_rows * SEARCH_POPUP_ROW_H + 8
-        )
+        # Sabit boyut — içerik miktarına göre değişmez
+        POPUP_W = 500
+        POPUP_H = 170
+        self._search_popup.setGeometry(sc_pos.x(), sc_pos.y(), POPUP_W, POPUP_H)
         self._search_popup.raise_()
         self._search_popup.show()
 
@@ -1253,9 +1345,6 @@ class OfferWindow(QWidget):
                 self.OFFER_COLUMNS["product_code"],
                 self._make_cell(item.product_code),
             )
-            self.offer_table.setItem(
-                row, self.OFFER_COLUMNS["name"], self._make_cell(item.name)
-            )
             self.offer_table.setCellWidget(
                 row,
                 self.OFFER_COLUMNS["quantity"],
@@ -1307,21 +1396,10 @@ class OfferWindow(QWidget):
     def _prompt_price(
         self, product_name: str, current_price: float = 0.0
     ) -> float | None:
-        text, ok = QInputDialog.getText(
-            self,
-            "Birim Fiyat",
-            f"{product_name}\nBirim fiyatı giriniz:",
-            text=f"{current_price:.2f}" if current_price else "",
-        )
-        if not ok:
+        dialog = _PriceDialog(product_name, current_price, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
-        try:
-            return max(0.0, float(text.strip().replace(",", ".")))
-        except ValueError:
-            QMessageBox.warning(
-                self, "Geçersiz Fiyat", "Lütfen geçerli bir fiyat giriniz."
-            )
-            return self._prompt_price(product_name, current_price)
+        return dialog.price_value()
 
     # ── PDF (business logic dokunulmadı) ──────────────────────────────────
 
